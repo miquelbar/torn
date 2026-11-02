@@ -276,17 +276,16 @@ func (a *AgyProvider) scanTranscriptTokens(path string) int64 {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if !strings.Contains(string(line), "tokens") {
+		if !strings.Contains(string(line), `"input_tokens"`) {
 			continue
 		}
 
 		var step struct {
-			InputTokens     int `json:"input_tokens"`
-			OutputTokens    int `json:"output_tokens"`
-			CacheReadTokens int `json:"cache_read_tokens"`
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
 		}
 		if err := json.Unmarshal(line, &step); err == nil {
-			total += int64(step.InputTokens + step.OutputTokens + step.CacheReadTokens)
+			total += int64(step.InputTokens + step.OutputTokens)
 		}
 	}
 

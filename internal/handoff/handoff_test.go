@@ -126,3 +126,39 @@ func TestBuilderFresh(t *testing.T) {
 		t.Errorf("expected Fresh Relay notice")
 	}
 }
+
+func TestBuilderUserDirectivesPreservationAndDeduplication(t *testing.T) {
+	b := NewBuilder()
+	proj := &project.Info{Path: "/app"}
+
+	longDirective := "Please fix the following 3 issues:\n1. Translate everything to English.\n2. Fix truncation so long instructions are never cut off prematurely.\n3. Verify all historical tokens accurately without inflation."
+
+	details := &provider.SessionDetails{
+		Turns: []provider.Turn{
+			{Role: "user", Text: "Root objective: configure repository"},
+			{Role: "assistant", Text: "Done."},
+			{Role: "user", Text: "Audit the system thoroughly."},
+			{Role: "user", Text: "Audit the system thoroughly."}, // consecutive duplicate
+			{Role: "assistant", Text: "Audit complete."},
+			{Role: "user", Text: longDirective}, // latest user directive (must be fully preserved)
+		},
+	}
+
+	prompt := b.Build(proj, "claude", "codex", details, Options{})
+
+	// 1. Verify Root Objective
+	if !strings.Contains(prompt, "Root objective: configure repository") {
+		t.Errorf("expected root objective")
+	}
+
+	// 2. Verify duplicate removal (should only appear once)
+	count := strings.Count(prompt, "Audit the system thoroughly.")
+	if count != 1 {
+		t.Errorf("expected duplicate directive to appear exactly once, got %d", count)
+	}
+
+	// 3. Verify latest directive is fully preserved with all 3 points
+	if !strings.Contains(prompt, "3. Verify all historical tokens accurately without inflation.") {
+		t.Errorf("expected latest directive to be preserved in full without truncation")
+	}
+}

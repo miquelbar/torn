@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -254,54 +252,76 @@ func (c *CodexProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	startOfWeek := startOfDay.AddDate(0, 0, -7)
 
-	// 1. Prefer fast SQLite query on state_5.sqlite if sqlite3 binary is present
-	sqlitePath := filepath.Join(c.baseDir, "state_5.sqlite")
-	if _, err := os.Stat(sqlitePath); err == nil {
-		if bin, err := exec.LookPath("sqlite3"); err == nil {
-			query := fmt.Sprintf(
-				"SELECT count(*), coalesce(sum(tokens_used), 0), coalesce(sum(CASE WHEN updated_at >= %d THEN tokens_used ELSE 0 END), 0), coalesce(sum(CASE WHEN updated_at >= %d THEN tokens_used ELSE 0 END), 0) FROM threads;",
-				startOfWeek.Unix(),
-				startOfDay.Unix(),
-			)
-			cmd := exec.Command(bin, sqlitePath, query)
-			out, err := cmd.Output()
-			if err == nil {
-				parts := strings.Split(strings.TrimSpace(string(out)), "|")
-				if len(parts) >= 4 {
-					metrics.TotalSessions, _ = strconv.Atoi(parts[0])
-					metrics.TotalTokens, _ = strconv.ParseInt(parts[1], 10, 64)
-					metrics.TokensThisWeek, _ = strconv.ParseInt(parts[2], 10, 64)
-					metrics.TokensToday, _ = strconv.ParseInt(parts[3], 10, 64)
-					return metrics, nil
-				}
-			}
-		}
-	}
-
-	// 2. Fallback: walk sessions directory
 	sessionsDir := filepath.Join(c.baseDir, "sessions")
 	_ = filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
 			return nil
 		}
+		if !strings.HasPrefix(d.Name(), "rollout-") {
+			return nil
+		}
+
 		metrics.TotalSessions++
 		info, err := d.Info()
 		if err != nil {
 			return nil
 		}
 
-		details, err := c.ParseSession(path)
-		if err == nil && details.TotalTokens > 0 {
-			metrics.TotalTokens += details.TotalTokens
-			if info.ModTime().After(startOfWeek) {
-				metrics.TokensThisWeek += details.TotalTokens
-			}
-			if info.ModTime().After(startOfDay) {
-				metrics.TokensToday += details.TotalTokens
-			}
+		realTokens := c.scanRolloutTokens(path)
+		metrics.TotalTokens += realTokens
+		if info.ModTime().After(startOfWeek) {
+			metrics.TokensThisWeek += realTokens
+		}
+		if info.ModTime().After(startOfDay) {
+			metrics.TokensToday += realTokens
 		}
 		return nil
 	})
 
 	return metrics, nil
+}
+
+func (c *CodexProvider) scanRolloutTokens(path string) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	var lastIn, lastCached, lastOut int64
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !strings.Contains(string(line), `"total_token_usage"`) {
+			continue
+		}
+
+		var raw struct {
+			Payload struct {
+				Info struct {
+					TotalTokenUsage struct {
+						InputTokens       int64 `json:"input_tokens"`
+						CachedInputTokens int64 `json:"cached_input_tokens"`
+						OutputTokens      int64 `json:"output_tokens"`
+					} `json:"total_token_usage"`
+				} `json:"info"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(line, &raw); err == nil {
+			u := raw.Payload.Info.TotalTokenUsage
+			if u.InputTokens > 0 || u.OutputTokens > 0 {
+				lastIn = u.InputTokens
+				lastCached = u.CachedInputTokens
+				lastOut = u.OutputTokens
+			}
+		}
+	}
+
+	realIn := lastIn - lastCached
+	if realIn < 0 {
+		realIn = 0
+	}
+	return realIn + lastOut
 }

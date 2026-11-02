@@ -79,19 +79,25 @@ func (b *Builder) renderUserIntent(details *provider.SessionDetails) string {
 		return sb.String()
 	}
 
-	// Filter human user turns across entire session (ignoring tool results)
+	// Filter human user turns across entire session (ignoring tool results and consecutive duplicates)
 	var userTurns []string
 	for _, t := range details.Turns {
 		if t.Role == "user" {
 			txt := strings.TrimSpace(t.Text)
 			if txt != "" && !isToolResultText(txt) {
+				if len(userTurns) > 0 && userTurns[len(userTurns)-1] == txt {
+					continue
+				}
 				userTurns = append(userTurns, txt)
 			}
 		}
 	}
 
 	if len(userTurns) == 0 && details.LastUserMessage != "" && !isToolResultText(details.LastUserMessage) {
-		userTurns = append(userTurns, strings.TrimSpace(details.LastUserMessage))
+		lastMsg := strings.TrimSpace(details.LastUserMessage)
+		if len(userTurns) == 0 || userTurns[len(userTurns)-1] != lastMsg {
+			userTurns = append(userTurns, lastMsg)
+		}
 	}
 
 	if len(userTurns) == 0 {
@@ -99,8 +105,8 @@ func (b *Builder) renderUserIntent(details *provider.SessionDetails) string {
 		return sb.String()
 	}
 
-	// Root Objective: first user message
-	root := truncateText(userTurns[0], 500)
+	// Root Objective: first user message (up to 600 chars)
+	root := truncateText(userTurns[0], 600)
 	sb.WriteString(fmt.Sprintf("**Root Objective:**\n> %s\n\n", root))
 
 	// Last directives (up to last 3 user messages)
@@ -111,7 +117,12 @@ func (b *Builder) renderUserIntent(details *provider.SessionDetails) string {
 			startIdx = 1
 		}
 		for i := startIdx; i < len(userTurns); i++ {
-			msg := truncateText(userTurns[i], 300)
+			isLatest := (i == len(userTurns)-1)
+			limit := 600
+			if isLatest {
+				limit = 4000
+			}
+			msg := truncateText(userTurns[i], limit)
 			sb.WriteString(fmt.Sprintf("- %s\n", msg))
 		}
 		sb.WriteString("\n")

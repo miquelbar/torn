@@ -121,6 +121,8 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
+	seenMsgIDs := make(map[string]bool)
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -171,10 +173,16 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 			var turnTokens int
 			if msgMap != nil {
 				if usage, ok := msgMap["usage"].(map[string]any); ok {
-					inTok := toInt64(usage["input_tokens"]) + toInt64(usage["cache_read_input_tokens"]) + toInt64(usage["cache_creation_input_tokens"])
+					inTok := toInt64(usage["input_tokens"]) + toInt64(usage["cache_creation_input_tokens"])
 					outTok := toInt64(usage["output_tokens"])
 					turnTokens = int(inTok + outTok)
-					details.TotalTokens += inTok + outTok
+					msgID, _ := msgMap["id"].(string)
+					if msgID == "" || !seenMsgIDs[msgID] {
+						if msgID != "" {
+							seenMsgIDs[msgID] = true
+						}
+						details.TotalTokens += inTok + outTok
+					}
 				}
 			}
 
@@ -251,7 +259,7 @@ func (c *ClaudeProvider) scanFileTokens(path string) int64 {
 	}
 	defer f.Close()
 
-	var total int64
+	seenMsgs := make(map[string]int64)
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -263,17 +271,27 @@ func (c *ClaudeProvider) scanFileTokens(path string) int64 {
 
 		var raw struct {
 			Message struct {
+				ID    string         `json:"id"`
 				Usage map[string]any `json:"usage"`
 			} `json:"message"`
 		}
 		if err := json.Unmarshal(line, &raw); err == nil && raw.Message.Usage != nil {
 			u := raw.Message.Usage
-			inTok := toInt64(u["input_tokens"]) + toInt64(u["cache_read_input_tokens"]) + toInt64(u["cache_creation_input_tokens"])
+			inTok := toInt64(u["input_tokens"]) + toInt64(u["cache_creation_input_tokens"])
 			outTok := toInt64(u["output_tokens"])
-			total += inTok + outTok
+			msgTokens := inTok + outTok
+			if raw.Message.ID != "" {
+				seenMsgs[raw.Message.ID] = msgTokens
+			} else {
+				seenMsgs[fmt.Sprintf("anon_%d", len(seenMsgs))] = msgTokens
+			}
 		}
 	}
 
+	var total int64
+	for _, tok := range seenMsgs {
+		total += tok
+	}
 	return total
 }
 

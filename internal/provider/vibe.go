@@ -221,11 +221,21 @@ func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 		var meta struct {
 			StartTime string `json:"start_time"`
 			Stats     struct {
-				TotalTokens int64 `json:"session_total_llm_tokens"`
+				PromptTokens     int64 `json:"session_prompt_tokens"`
+				CachedTokens     int64 `json:"session_cached_tokens"`
+				CompletionTokens int64 `json:"session_completion_tokens"`
+				TotalTokens      int64 `json:"session_total_llm_tokens"`
 			} `json:"stats"`
 		}
 		if err := json.Unmarshal(metaData, &meta); err == nil {
-			tokens := meta.Stats.TotalTokens
+			nonCachedPrompt := meta.Stats.PromptTokens - meta.Stats.CachedTokens
+			if nonCachedPrompt < 0 {
+				nonCachedPrompt = 0
+			}
+			tokens := nonCachedPrompt + meta.Stats.CompletionTokens
+			if tokens == 0 && meta.Stats.TotalTokens > 0 {
+				tokens = meta.Stats.TotalTokens
+			}
 			metrics.TotalTokens += tokens
 
 			var t time.Time
