@@ -9,7 +9,17 @@ import (
 )
 
 func TestBuilderStandardHandoff(t *testing.T) {
-	b := NewBuilder()
+	mockGit := func(dir string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "status" {
+			return " M file.go", nil
+		}
+		if len(args) > 0 && args[0] == "diff" {
+			return " file.go | 2 +-\n 1 file changed", nil
+		}
+		return "", nil
+	}
+
+	b := NewBuilderWithGit(mockGit)
 	proj := &project.Info{
 		Path:    "/Users/dev/app",
 		GitHead: "abcdef123456",
@@ -19,6 +29,9 @@ func TestBuilderStandardHandoff(t *testing.T) {
 	details := &provider.SessionDetails{
 		Turns: []provider.Turn{
 			{Role: "user", Text: "implement endpoint /api/users"},
+			{Role: "assistant", Text: "thinking about model", Tools: []string{"write_file(user.go)"}},
+			{Role: "user", Text: "tool_result: success"}, // should be filtered out
+			{Role: "user", Text: "make sure tests pass"},
 			{Role: "assistant", Text: "endpoint created, need to add tests"},
 		},
 	}
@@ -31,8 +44,41 @@ func TestBuilderStandardHandoff(t *testing.T) {
 	if !strings.Contains(prompt, "abcdef123456") {
 		t.Errorf("prompt missing git head: %s", prompt)
 	}
+
+	// 1. Verify User Intent section
+	if !strings.Contains(prompt, "### User Intent & Last Directives") {
+		t.Errorf("prompt missing User Intent section: %s", prompt)
+	}
+	if !strings.Contains(prompt, "**Root Objective:**") || !strings.Contains(prompt, "implement endpoint /api/users") {
+		t.Errorf("prompt missing root objective: %s", prompt)
+	}
+	if !strings.Contains(prompt, "make sure tests pass") {
+		t.Errorf("prompt missing recent directive: %s", prompt)
+	}
+	if strings.Contains(prompt, "tool_result: success") {
+		t.Errorf("prompt should have filtered out tool_result from user directives: %s", prompt)
+	}
+
+	// 2. Verify Assistant Reasoning & Actions section
+	if !strings.Contains(prompt, "### Recent Assistant Reasoning & Actions") {
+		t.Errorf("prompt missing Assistant Actions section: %s", prompt)
+	}
 	if !strings.Contains(prompt, "endpoint created, need to add tests") {
-		t.Errorf("prompt missing progress turn: %s", prompt)
+		t.Errorf("prompt missing assistant reasoning: %s", prompt)
+	}
+	if !strings.Contains(prompt, "write_file(user.go)") {
+		t.Errorf("prompt missing tool action: %s", prompt)
+	}
+
+	// 3. Verify Git Status section
+	if !strings.Contains(prompt, "### Workspace Git Status") {
+		t.Errorf("prompt missing Git Status section: %s", prompt)
+	}
+	if !strings.Contains(prompt, "M file.go") {
+		t.Errorf("prompt missing git status output: %s", prompt)
+	}
+	if !strings.Contains(prompt, "1 file changed") {
+		t.Errorf("prompt missing git diff output: %s", prompt)
 	}
 }
 
@@ -56,7 +102,7 @@ func TestBuilderDropTurns(t *testing.T) {
 	if !strings.Contains(prompt, "first prompt") {
 		t.Errorf("prompt should retain earlier turns")
 	}
-	if !strings.Contains(prompt, "Pruned via `--drop`") && !strings.Contains(prompt, "`--drop`") {
+	if !strings.Contains(prompt, "pruned via `--drop`") && !strings.Contains(prompt, "`--drop`") {
 		t.Errorf("prompt should mention drop notice")
 	}
 }

@@ -11,9 +11,9 @@ import (
 type Status string
 
 const (
-	StatusAvailable   Status = "available"    // 🟢 Libre
-	StatusInUse       Status = "in_use"       // 🟡 En uso
-	StatusRateLimited Status = "rate_limited" // 🔴 Bloqueado (enfriando)
+	StatusReady    Status = "ready"    // 🟢 READY
+	StatusActive   Status = "active"   // 🟡 ACTIVE
+	StatusCooldown Status = "cooldown" // 🔴 COOLDOWN
 )
 
 // Manager handles rate-limit and availability tracking.
@@ -24,21 +24,21 @@ func NewManager() *Manager {
 	return &Manager{}
 }
 
-// GetStatus checks the availability of a provider based on project state and current time.
+// GetStatus checks provider availability based on project state and current time.
 func (m *Manager) GetStatus(providerName string, state *storage.State, now time.Time) (Status, time.Duration) {
 	if state.Cooldowns != nil {
 		if until, ok := state.Cooldowns[providerName]; ok {
 			if now.Before(until) {
-				return StatusRateLimited, until.Sub(now)
+				return StatusCooldown, until.Sub(now)
 			}
 		}
 	}
 
 	if state.ActiveCLI == providerName {
-		return StatusInUse, 0
+		return StatusActive, 0
 	}
 
-	return StatusAvailable, 0
+	return StatusReady, 0
 }
 
 // SetCooldown records a rate-limit cooldown for a provider in the state.

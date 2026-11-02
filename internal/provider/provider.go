@@ -27,7 +27,7 @@ type Session struct {
 type SessionDetails struct {
 	Session
 	Turns                []Turn `json:"turns"`
-	TotalTokens          int    `json:"total_tokens"`
+	TotalTokens          int64  `json:"total_tokens"`
 	LastUserMessage      string `json:"last_user_message"`
 	LastAssistantMessage string `json:"last_assistant_message"`
 }
@@ -35,8 +35,9 @@ type SessionDetails struct {
 // UsageMetrics holds calculated token counts and rates for a provider.
 type UsageMetrics struct {
 	TotalSessions  int     `json:"total_sessions"`
-	TokensToday    int     `json:"tokens_today"`
-	TokensThisWeek int     `json:"tokens_this_week"`
+	TokensToday    int64   `json:"tokens_today"`
+	TokensThisWeek int64   `json:"tokens_this_week"`
+	TotalTokens    int64   `json:"total_tokens"`
 	BurnRatePerMin float64 `json:"burn_rate_per_min"`
 }
 

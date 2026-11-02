@@ -119,7 +119,6 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 	}
 
 	scanner := bufio.NewScanner(file)
-	// Explicit 10 MB buffer to prevent failure on large tool outputs
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
 	for scanner.Scan() {
@@ -169,14 +168,13 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 
 			extracted := ParseContentBlock(rawContent)
 
-			// Extract tokens
 			var turnTokens int
 			if msgMap != nil {
 				if usage, ok := msgMap["usage"].(map[string]any); ok {
-					inTok := toInt(usage["input_tokens"]) + toInt(usage["cache_read_input_tokens"]) + toInt(usage["cache_creation_input_tokens"])
-					outTok := toInt(usage["output_tokens"])
-					turnTokens = inTok + outTok
-					details.TotalTokens += turnTokens
+					inTok := toInt64(usage["input_tokens"]) + toInt64(usage["cache_read_input_tokens"]) + toInt64(usage["cache_creation_input_tokens"])
+					outTok := toInt64(usage["output_tokens"])
+					turnTokens = int(inTok + outTok)
+					details.TotalTokens += inTok + outTok
 				}
 			}
 
@@ -226,16 +224,19 @@ func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 			}
 			metrics.TotalSessions++
 			fInfo, err := f.Info()
-			if err != nil || fInfo.ModTime().Before(startOfWeek) {
+			if err != nil {
 				continue
 			}
 
-			details, err := c.ParseSession(filepath.Join(pDir, f.Name()))
-			if err == nil && details.TotalTokens > 0 {
-				metrics.TokensThisWeek += details.TotalTokens
-				if fInfo.ModTime().After(startOfDay) {
-					metrics.TokensToday += details.TotalTokens
-				}
+			filePath := filepath.Join(pDir, f.Name())
+			fileTokens := c.scanFileTokens(filePath)
+			metrics.TotalTokens += fileTokens
+
+			if fInfo.ModTime().After(startOfWeek) {
+				metrics.TokensThisWeek += fileTokens
+			}
+			if fInfo.ModTime().After(startOfDay) {
+				metrics.TokensToday += fileTokens
 			}
 		}
 	}
@@ -243,17 +244,50 @@ func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 	return metrics, nil
 }
 
-func toInt(v any) int {
+func (c *ClaudeProvider) scanFileTokens(path string) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	var total int64
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !strings.Contains(string(line), `"usage"`) {
+			continue
+		}
+
+		var raw struct {
+			Message struct {
+				Usage map[string]any `json:"usage"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &raw); err == nil && raw.Message.Usage != nil {
+			u := raw.Message.Usage
+			inTok := toInt64(u["input_tokens"]) + toInt64(u["cache_read_input_tokens"]) + toInt64(u["cache_creation_input_tokens"])
+			outTok := toInt64(u["output_tokens"])
+			total += inTok + outTok
+		}
+	}
+
+	return total
+}
+
+func toInt64(v any) int64 {
 	if v == nil {
 		return 0
 	}
 	switch n := v.(type) {
 	case float64:
-		return int(n)
+		return int64(n)
 	case int:
-		return n
+		return int64(n)
 	case int64:
-		return int(n)
+		return n
 	}
 	return 0
 }

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -248,24 +250,52 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 
 func (c *CodexProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 	var metrics UsageMetrics
-	sessionsDir := filepath.Join(c.baseDir, "sessions")
 
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	startOfWeek := startOfDay.AddDate(0, 0, -7)
 
+	// 1. Prefer fast SQLite query on state_5.sqlite if sqlite3 binary is present
+	sqlitePath := filepath.Join(c.baseDir, "state_5.sqlite")
+	if _, err := os.Stat(sqlitePath); err == nil {
+		if bin, err := exec.LookPath("sqlite3"); err == nil {
+			query := fmt.Sprintf(
+				"SELECT count(*), coalesce(sum(tokens_used), 0), coalesce(sum(CASE WHEN updated_at >= %d THEN tokens_used ELSE 0 END), 0), coalesce(sum(CASE WHEN updated_at >= %d THEN tokens_used ELSE 0 END), 0) FROM threads;",
+				startOfWeek.Unix(),
+				startOfDay.Unix(),
+			)
+			cmd := exec.Command(bin, sqlitePath, query)
+			out, err := cmd.Output()
+			if err == nil {
+				parts := strings.Split(strings.TrimSpace(string(out)), "|")
+				if len(parts) >= 4 {
+					metrics.TotalSessions, _ = strconv.Atoi(parts[0])
+					metrics.TotalTokens, _ = strconv.ParseInt(parts[1], 10, 64)
+					metrics.TokensThisWeek, _ = strconv.ParseInt(parts[2], 10, 64)
+					metrics.TokensToday, _ = strconv.ParseInt(parts[3], 10, 64)
+					return metrics, nil
+				}
+			}
+		}
+	}
+
+	// 2. Fallback: walk sessions directory
+	sessionsDir := filepath.Join(c.baseDir, "sessions")
 	_ = filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
 			return nil
 		}
 		metrics.TotalSessions++
 		info, err := d.Info()
-		if err != nil || info.ModTime().Before(startOfWeek) {
+		if err != nil {
 			return nil
 		}
 
 		details, err := c.ParseSession(path)
 		if err == nil && details.TotalTokens > 0 {
-			metrics.TokensThisWeek += details.TotalTokens
+			metrics.TotalTokens += details.TotalTokens
+			if info.ModTime().After(startOfWeek) {
+				metrics.TokensThisWeek += details.TotalTokens
+			}
 			if info.ModTime().After(startOfDay) {
 				metrics.TokensToday += details.TotalTokens
 			}

@@ -172,7 +172,7 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 		}
 
 		turnTokens := step.InputTokens + step.OutputTokens
-		details.TotalTokens += turnTokens
+		details.TotalTokens += int64(turnTokens)
 
 		if step.Type == "USER_INPUT" && step.Content != "" {
 			userText := cleanUserPrompt(step.Content)
@@ -229,33 +229,68 @@ func (a *AgyProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	startOfWeek := startOfDay.AddDate(0, 0, -7)
 
+	seenConvs := make(map[string]bool)
 	for scanner.Scan() {
 		var item struct {
 			ConversationID string `json:"conversationId"`
 			Timestamp      int64  `json:"timestamp"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &item); err == nil && item.ConversationID != "" {
+			if seenConvs[item.ConversationID] {
+				continue
+			}
+			seenConvs[item.ConversationID] = true
 			metrics.TotalSessions++
+
 			updated := time.Unix(item.Timestamp/1000, 0)
 			if item.Timestamp < 10000000000 {
 				updated = time.Unix(item.Timestamp, 0)
 			}
 
+			transcriptPath := filepath.Join(a.baseDir, "brain", item.ConversationID, ".system_generated", "logs", "transcript.jsonl")
+			tokens := a.scanTranscriptTokens(transcriptPath)
+			metrics.TotalTokens += tokens
+
 			if updated.After(startOfWeek) {
-				// Read transcript tokens if available
-				transcriptPath := filepath.Join(a.baseDir, "brain", item.ConversationID, ".system_generated", "logs", "transcript.jsonl")
-				details, err := a.ParseSession(transcriptPath)
-				if err == nil && details.TotalTokens > 0 {
-					metrics.TokensThisWeek += details.TotalTokens
-					if updated.After(startOfDay) {
-						metrics.TokensToday += details.TotalTokens
-					}
-				}
+				metrics.TokensThisWeek += tokens
+			}
+			if updated.After(startOfDay) {
+				metrics.TokensToday += tokens
 			}
 		}
 	}
 
 	return metrics, nil
+}
+
+func (a *AgyProvider) scanTranscriptTokens(path string) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	var total int64
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !strings.Contains(string(line), "tokens") {
+			continue
+		}
+
+		var step struct {
+			InputTokens     int `json:"input_tokens"`
+			OutputTokens    int `json:"output_tokens"`
+			CacheReadTokens int `json:"cache_read_tokens"`
+		}
+		if err := json.Unmarshal(line, &step); err == nil {
+			total += int64(step.InputTokens + step.OutputTokens + step.CacheReadTokens)
+		}
+	}
+
+	return total
 }
 
 func cleanUserPrompt(s string) string {

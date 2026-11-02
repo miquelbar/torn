@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -197,17 +198,54 @@ func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error)
 
 func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 	var metrics UsageMetrics
-	indexPath := filepath.Join(v.baseDir, "logs", "session", ".session_index.json")
-	data, err := os.ReadFile(indexPath)
+	sessionDir := filepath.Join(v.baseDir, "logs", "session")
+	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
 		return metrics, nil
 	}
 
-	var index map[string]vibeIndexEntry
-	if err := json.Unmarshal(data, &index); err != nil {
-		return metrics, nil
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	startOfWeek := startOfDay.AddDate(0, 0, -7)
+
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		metaPath := filepath.Join(sessionDir, entry.Name(), "meta.json")
+		metaData, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+
+		metrics.TotalSessions++
+		var meta struct {
+			StartTime string `json:"start_time"`
+			Stats     struct {
+				TotalTokens int64 `json:"session_total_llm_tokens"`
+			} `json:"stats"`
+		}
+		if err := json.Unmarshal(metaData, &meta); err == nil {
+			tokens := meta.Stats.TotalTokens
+			metrics.TotalTokens += tokens
+
+			var t time.Time
+			if meta.StartTime != "" {
+				t, _ = time.Parse(time.RFC3339, meta.StartTime)
+			}
+			if t.IsZero() {
+				if info, err := entry.Info(); err == nil {
+					t = info.ModTime()
+				}
+			}
+
+			if t.After(startOfWeek) {
+				metrics.TokensThisWeek += tokens
+			}
+			if t.After(startOfDay) {
+				metrics.TokensToday += tokens
+			}
+		}
 	}
 
-	metrics.TotalSessions = len(index)
 	return metrics, nil
 }

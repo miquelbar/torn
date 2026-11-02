@@ -8,7 +8,7 @@ Zero-footprint local hypervisor written in Go, designed to manage bidirectional 
 - **Anti-Sandbox Context Injection:** Injects handoff context directly into `argv[1]` upon process invocation via `syscall.Exec`, avoiding sandbox file permission restrictions (`/tmp` or `$HOME`).
 - **Resilient CWD & Git Inspection:** Scans CLI session logs filtering strictly by current project workspace `cwd` and validates against current `git rev-parse HEAD`.
 - **Soft Landing (`torn prep`):** Copies standardized handoff prompts to the system clipboard when reaching quota limits (85-90%).
-- **Unified Quota & Cooldowns (`torn stats`):** Real-time traffic light dashboard (🟢 LIBRE, 🟡 EN USO, 🔴 BLOQUEADO) with cooldown countdowns and burn rates.
+- **Unified Quota & Cooldowns (`torn stats`):** Real-time traffic light dashboard (🟢 READY, 🟡 ACTIVE, 🔴 COOLDOWN) with cooldown countdowns and total historical tokens.
 - **Cross-Session Search (`torn find <query>`):** Searches local session histories across all CLI tools for keywords.
 - **Next-Day Resume (`torn resume`):** Restores active context from previous sessions into your preferred CLI.
 
@@ -78,16 +78,16 @@ torn stats
 
 Output preview:
 ```txt
-====================================================================
-                       TORN HYPERVISOR STATS                        
-====================================================================
-PROVIDER     | STATUS           | COOLDOWN       | BURN RATE   
--------------+------------------+----------------+--------------
-claude       | 🟢 LIBRE          | --             | --          
-codex        | 🟡 EN USO         | --             | 450 tok/m   
-vibe         | 🔴 BLOQUEADO      | 1h 45m         | --          
-agy          | 🟢 LIBRE          | --             | --          
-====================================================================
+===================================================================================================================
+                                               TORN HYPERVISOR STATS                                               
+===================================================================================================================
+PROVIDER   | STATUS         | COOLDOWN   | SESSIONS   | TOKENS TODAY   | THIS WEEK      | TOTAL TOKENS     
+-----------+----------------+------------+------------+----------------+----------------+------------------
+claude     | 🟢 READY       | --         | 30         | --             | --             | 28,695,959,063   
+codex      | 🟢 READY       | --         | 32         | --             | --             | 1,849,939,873    
+vibe       | 🟢 READY       | --         | 40         | --             | --             | 672,812,043      
+agy        | 🟡 ACTIVE      | --         | 15         | 3,853,620      | 3,853,620      | 2,932,657,611    
+===================================================================================================================
 ```
 
 ### 4. Unified Session Search (`torn find <query>`)

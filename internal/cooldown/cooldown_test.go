@@ -15,23 +15,23 @@ func TestCooldownTransitions(t *testing.T) {
 		Cooldowns: make(map[string]time.Time),
 	}
 
-	// 1. In use check
+	// 1. In use / active check
 	status, _ := mgr.GetStatus("claude", state, now)
-	if status != StatusInUse {
-		t.Errorf("expected StatusInUse for claude, got %v", status)
+	if status != StatusActive {
+		t.Errorf("expected StatusActive for claude, got %v", status)
 	}
 
-	// 2. Available check
+	// 2. Ready check
 	status, _ = mgr.GetStatus("codex", state, now)
-	if status != StatusAvailable {
-		t.Errorf("expected StatusAvailable for codex, got %v", status)
+	if status != StatusReady {
+		t.Errorf("expected StatusReady for codex, got %v", status)
 	}
 
 	// 3. Set cooldown
 	mgr.SetCooldown("codex", state, 2*time.Hour, now)
 	status, remaining := mgr.GetStatus("codex", state, now)
-	if status != StatusRateLimited {
-		t.Errorf("expected StatusRateLimited for codex, got %v", status)
+	if status != StatusCooldown {
+		t.Errorf("expected StatusCooldown for codex, got %v", status)
 	}
 	if remaining <= 0 {
 		t.Errorf("expected remaining > 0, got %v", remaining)
@@ -40,15 +40,15 @@ func TestCooldownTransitions(t *testing.T) {
 	// 4. Cooldown expired
 	future := now.Add(3 * time.Hour)
 	status, _ = mgr.GetStatus("codex", state, future)
-	if status != StatusAvailable {
-		t.Errorf("expected StatusAvailable after cooldown expired, got %v", status)
+	if status != StatusReady {
+		t.Errorf("expected StatusReady after cooldown expired, got %v", status)
 	}
 
 	// 5. Clear cooldown
 	mgr.ClearCooldown("codex", state)
 	status, _ = mgr.GetStatus("codex", state, now)
-	if status != StatusAvailable {
-		t.Errorf("expected StatusAvailable after manual clear, got %v", status)
+	if status != StatusReady {
+		t.Errorf("expected StatusReady after manual clear, got %v", status)
 	}
 }
 

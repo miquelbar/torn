@@ -16,8 +16,9 @@ type ProviderStats struct {
 	Status         cooldown.Status
 	CooldownTime   time.Duration
 	SessionsCount  int
-	TokensToday    int
-	TokensThisWeek int
+	TokensToday    int64
+	TokensThisWeek int64
+	TotalTokens    int64
 	BurnRatePerMin float64
 }
 
@@ -47,7 +48,6 @@ func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats
 
 		burnRate := 0.0
 		if usage.TokensToday > 0 {
-			// Estimate burn rate based on minutes elapsed today (or min 60 mins)
 			midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 			minsToday := now.Sub(midnight).Minutes()
 			if minsToday > 0 {
@@ -62,6 +62,7 @@ func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats
 			SessionsCount:  usage.TotalSessions,
 			TokensToday:    usage.TokensToday,
 			TokensThisWeek: usage.TokensThisWeek,
+			TotalTokens:    usage.TotalTokens,
 			BurnRatePerMin: burnRate,
 		}
 		results = append(results, ps)
@@ -74,19 +75,19 @@ func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats
 func RenderDashboard(statsList []ProviderStats) string {
 	var sb strings.Builder
 
-	sb.WriteString("========================================================================================\n")
-	sb.WriteString("                                 TORN HYPERVISOR STATS                                  \n")
-	sb.WriteString("========================================================================================\n")
-	sb.WriteString(fmt.Sprintf("%-10s | %-14s | %-12s | %-12s | %-12s | %-12s\n",
-		"PROVIDER", "STATUS", "COOLDOWN", "SESSIONS", "TOKENS TODAY", "THIS WEEK"))
-	sb.WriteString("-----------+----------------+--------------+--------------+--------------+--------------\n")
+	sb.WriteString("===================================================================================================================\n")
+	sb.WriteString("                                               TORN HYPERVISOR STATS                                               \n")
+	sb.WriteString("===================================================================================================================\n")
+	sb.WriteString(fmt.Sprintf("%-10s | %-14s | %-10s | %-10s | %-14s | %-14s | %-16s\n",
+		"PROVIDER", "STATUS", "COOLDOWN", "SESSIONS", "TOKENS TODAY", "THIS WEEK", "TOTAL TOKENS"))
+	sb.WriteString("-----------+----------------+------------+------------+----------------+----------------+------------------\n")
 
 	for _, ps := range statsList {
-		statusIcon := "🟢 LIBRE"
-		if ps.Status == cooldown.StatusInUse {
-			statusIcon = "🟡 EN USO"
-		} else if ps.Status == cooldown.StatusRateLimited {
-			statusIcon = "🔴 BLOQUEADO"
+		statusIcon := "🟢 READY"
+		if ps.Status == cooldown.StatusActive {
+			statusIcon = "🟡 ACTIVE"
+		} else if ps.Status == cooldown.StatusCooldown {
+			statusIcon = "🔴 COOLDOWN"
 		}
 
 		cooldownStr := "--"
@@ -94,31 +95,44 @@ func RenderDashboard(statsList []ProviderStats) string {
 			cooldownStr = cooldown.FormatDuration(ps.CooldownTime)
 		}
 
-		tokensTodayStr := fmt.Sprintf("%d", ps.TokensToday)
-		if ps.TokensToday == 0 {
-			tokensTodayStr = "--"
+		sessionsStr := "--"
+		if ps.SessionsCount > 0 {
+			sessionsStr = formatNumber(int64(ps.SessionsCount))
 		}
 
-		tokensWeekStr := fmt.Sprintf("%d", ps.TokensThisWeek)
-		if ps.TokensThisWeek == 0 {
-			tokensWeekStr = "--"
-		}
-
-		sessionsStr := fmt.Sprintf("%d", ps.SessionsCount)
-		if ps.SessionsCount == 0 {
-			sessionsStr = "--"
-		}
-
-		sb.WriteString(fmt.Sprintf("%-10s | %-14s | %-12s | %-12s | %-12s | %-12s\n",
+		sb.WriteString(fmt.Sprintf("%-10s | %-14s | %-10s | %-10s | %-14s | %-14s | %-16s\n",
 			ps.Name,
 			statusIcon,
 			cooldownStr,
 			sessionsStr,
-			tokensTodayStr,
-			tokensWeekStr,
+			formatNumber(ps.TokensToday),
+			formatNumber(ps.TokensThisWeek),
+			formatNumber(ps.TotalTokens),
 		))
 	}
-	sb.WriteString("========================================================================================\n")
+	sb.WriteString("===================================================================================================================\n")
 
 	return sb.String()
+}
+
+func formatNumber(n int64) string {
+	if n == 0 {
+		return "--"
+	}
+
+	str := fmt.Sprintf("%d", n)
+	if len(str) <= 3 {
+		return str
+	}
+
+	var parts []string
+	rem := len(str) % 3
+	if rem > 0 {
+		parts = append(parts, str[:rem])
+	}
+	for i := rem; i < len(str); i += 3 {
+		parts = append(parts, str[i:i+3])
+	}
+
+	return strings.Join(parts, ",")
 }

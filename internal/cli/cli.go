@@ -256,46 +256,46 @@ func (a *App) renderDryRun(fromCLI string, sess *provider.Session, target provid
 	fmt.Fprintln(a.Out, "                               TORN RELAY DRY-RUN                               ")
 	fmt.Fprintln(a.Out, "================================================================================")
 
-	sessionPath := "(ninguna sesión previa detectada)"
+	sessionPath := "(no prior session detected)"
 	if sess != nil {
 		sessionPath = sess.Path
 	}
-	fmt.Fprintf(a.Out, "• Origen detectado: %s\n", fromCLI)
-	fmt.Fprintf(a.Out, "  Archivo:          %s\n", sessionPath)
-	fmt.Fprintf(a.Out, "  Turnos parseados: %d\n", turnsCount)
-	fmt.Fprintf(a.Out, "• Destino:          %s\n", target.Name())
+	fmt.Fprintf(a.Out, "• Detected source: %s\n", fromCLI)
+	fmt.Fprintf(a.Out, "  Session file:    %s\n", sessionPath)
+	fmt.Fprintf(a.Out, "  Parsed turns:    %d\n", turnsCount)
+	fmt.Fprintf(a.Out, "• Target:          %s\n", target.Name())
 
 	cmdDisplay := target.BinaryName()
 	if len(args) > 1 {
 		cmdDisplay = fmt.Sprintf("%s %s \"<HANDOFF_PROMPT>\"", target.BinaryName(), strings.Join(args[1:len(args)-1], " "))
 	}
-	fmt.Fprintf(a.Out, "• Invocación Exec:  %s\n\n", strings.TrimSpace(cmdDisplay))
+	fmt.Fprintf(a.Out, "• Exec command:    %s\n\n", strings.TrimSpace(cmdDisplay))
 	fmt.Fprintln(a.Out, "--------------------------------------------------------------------------------")
-	fmt.Fprintln(a.Out, "PROMPT DE HANDOFF GENERADO (inyectado vía argv):")
+	fmt.Fprintln(a.Out, "GENERATED HANDOFF PROMPT (injected via argv):")
 	fmt.Fprintln(a.Out, "--------------------------------------------------------------------------------")
 	fmt.Fprintln(a.Out, prompt)
 	fmt.Fprintln(a.Out, "================================================================================")
-	fmt.Fprintln(a.Out, "Dry-run completado. No se alteró ningún estado ni se ejecutó ningún proceso.")
+	fmt.Fprintln(a.Out, "Dry-run complete. No state was altered and no process was executed.")
 }
 
 // RunPrep copies a standardized closing prompt to clipboard.
 func (a *App) RunPrep() error {
-	prompt := `Estamos aproximándonos al límite de cuota de la sesión (85-90%).
-Por favor, prepara un bloque limpio de cierre y traspaso (handoff) con:
-1. Milestone y tarea activa actual.
-2. Archivos modificados y estado de compilación/tests.
-3. Decisiones arquitectónicas o bloqueos pendientes.
-4. Pasos exactos a seguir por el siguiente agente.`
+	prompt := `We are approaching the session quota limit (85-90%).
+Please prepare a clean handoff summary including:
+1. Active milestone and current task.
+2. Modified files and compilation/test status.
+3. Architecture decisions or pending blockers.
+4. Exact next steps for the incoming agent.`
 
 	if err := a.Clipboard(prompt); err != nil {
-		fmt.Fprintf(a.ErrOut, "Aviso: no se pudo copiar al portapapeles (%v)\n", err)
-		fmt.Fprintln(a.Out, "--- Prompt de cierre ---")
+		fmt.Fprintf(a.ErrOut, "Notice: could not copy to clipboard (%v)\n", err)
+		fmt.Fprintln(a.Out, "--- Closing Prompt ---")
 		fmt.Fprintln(a.Out, prompt)
 		return nil
 	}
 
-	fmt.Fprintln(a.Out, "🟢 [TORN PREP] Prompt de cierre copiado al portapapeles.")
-	fmt.Fprintln(a.Out, "Pégalo en tu CLI actual para que redacte su propio resumen antes de agotar la cuota.")
+	fmt.Fprintln(a.Out, "🟢 [TORN PREP] Handoff summary prompt copied to clipboard.")
+	fmt.Fprintln(a.Out, "Paste it into your active CLI to generate a clean closing summary before hitting limits.")
 	return nil
 }
 
@@ -332,13 +332,13 @@ func (a *App) RunFind(query string) error {
 	}
 
 	if len(matches) == 0 {
-		fmt.Fprintf(a.Out, "No se encontraron sesiones que contengan %q en este proyecto.\n", query)
+		fmt.Fprintf(a.Out, "No sessions containing %q found in this workspace.\n", query)
 		return nil
 	}
 
-	fmt.Fprintf(a.Out, "Encontradas %d sesiones con coincidencias para %q:\n\n", len(matches), query)
+	fmt.Fprintf(a.Out, "Found %d session(s) matching %q:\n\n", len(matches), query)
 	for _, m := range matches {
-		fmt.Fprintf(a.Out, "• [%s] %s (%d turnos) — %s\n",
+		fmt.Fprintf(a.Out, "• [%s] %s (%d turns) — %s\n",
 			m.Provider,
 			m.Timestamp.Format("2006-01-02 15:04"),
 			m.Turns,
@@ -359,32 +359,32 @@ func (a *App) RunResume(targetCLI string) error {
 
 // RunSync ensures global configuration rules are consistent in $HOME.
 func (a *App) RunSync() error {
-	fmt.Fprintln(a.Out, "🟢 [TORN SYNC] Reglas y directrices de agentes sincronizadas en $HOME.")
+	fmt.Fprintln(a.Out, "🟢 [TORN SYNC] Agent rules and guidelines synchronized in $HOME.")
 	return nil
 }
 
 func (a *App) printHelp() {
-	helpText := `torn - Hipervisor local de huella cero para relevos entre CLIs de IA
+	helpText := `torn - Zero-footprint local hypervisor for AI CLI handoffs
 
-USO:
-  torn [cli] [flags]       Ejecuta el relevo al siguiente CLI (o al indicado)
-  torn prep                Copia al portapapeles el prompt de aterrizaje suave
-  torn stats               Muestra el cuadro de mando de estados y cooldowns
-  torn find <texto>        Busca sesiones locales por palabra clave
-  torn resume [cli]        Retoma la última sesión activa en el agente deseado
-  torn sync                Sincroniza directrices globales en $HOME
+USAGE:
+  torn [cli] [flags]       Relay to next CLI (or specified target)
+  torn prep                Copy soft-landing closing prompt to clipboard
+  torn stats               Display provider status and quota telemetry
+  torn find <query>        Search local sessions across CLIs by keyword
+  torn resume [cli]        Restore latest active session into preferred agent
+  torn sync                Synchronize global agent rules in $HOME
 
-FLAGS DE RELEVO:
-  --drop N                 Amputa los últimos N turnos antes de pasar el testigo
-  --fresh                  Limpia la cadena acumulada e inicia tarea fresca
-  --dry-run, -n            Simula la detección y muestra el handoff sin ejecutar
+RELAY FLAGS:
+  --drop N                 Prune the last N turns before handoff
+  --fresh                  Clear accumulated chain and start fresh task
+  --dry-run, -n            Simulate detection and render handoff without executing
 
-EJEMPLOS:
-  torn                     Relevo automático por failover al siguiente CLI libre
-  torn --dry-run           Comprueba qué handoff se generaría sin ejecutar nada
-  torn claude              Relevo voluntario de vuelta a Claude
-  torn codex --drop 2      Relevo a Codex amputando los últimos 2 turnos
-  torn codex --fresh       Relevo a Codex con contexto limpio para nueva feature
+EXAMPLES:
+  torn                     Automatic failover relay to next available CLI
+  torn --dry-run           Preview generated handoff without executing
+  torn claude              Voluntary return to Claude
+  torn codex --drop 2      Relay to Codex dropping the last 2 turns
+  torn codex --fresh       Relay to Codex with fresh context for a new feature
 `
 	fmt.Fprint(a.Out, helpText)
 }

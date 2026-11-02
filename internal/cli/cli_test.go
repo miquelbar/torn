@@ -26,7 +26,7 @@ func TestCLIVersionAndHelp(t *testing.T) {
 	if err := app.Run([]string{"help"}); err != nil {
 		t.Fatalf("help failed: %v", err)
 	}
-	if !strings.Contains(out.String(), "USO:") {
+	if !strings.Contains(out.String(), "USAGE:") {
 		t.Errorf("help output unexpected: %s", out.String())
 	}
 }
@@ -49,7 +49,7 @@ func TestCLIPrepCommand(t *testing.T) {
 		t.Fatalf("prep failed: %v", err)
 	}
 
-	if !strings.Contains(out.String(), "[TORN PREP] Prompt de cierre copiado") {
+	if !strings.Contains(out.String(), "[TORN PREP] Handoff summary prompt copied") {
 		t.Errorf("expected confirmation message in output: %s", out.String())
 	}
 	if !strings.Contains(copiedText, "85-90%") {
@@ -100,10 +100,10 @@ func TestCLIDryRun(t *testing.T) {
 	if !strings.Contains(output, "TORN RELAY DRY-RUN") {
 		t.Errorf("expected dry-run header in output: %s", output)
 	}
-	if !strings.Contains(output, "Destino:          codex") {
+	if !strings.Contains(output, "Target:          codex") {
 		t.Errorf("expected target codex in output: %s", output)
 	}
-	if !strings.Contains(output, "PROMPT DE HANDOFF GENERADO") {
+	if !strings.Contains(output, "GENERATED HANDOFF PROMPT") {
 		t.Errorf("expected handoff prompt section: %s", output)
 	}
 }
