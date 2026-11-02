@@ -35,7 +35,7 @@ func NewCollector(reg *provider.Registry, cd *cooldown.Manager) *Collector {
 	}
 }
 
-// Collect returns status and metrics for all registered providers.
+// Collect returns status and real usage metrics for all registered providers.
 func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats {
 	all := c.registry.All()
 	results := make([]ProviderStats, 0, len(all))
@@ -43,14 +43,26 @@ func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats
 	for _, p := range all {
 		status, remaining := c.cooldown.GetStatus(p.Name(), state, now)
 
-		// Calculate simulated or parsed token metrics
+		usage, _ := p.CollectUsage(now)
+
+		burnRate := 0.0
+		if usage.TokensToday > 0 {
+			// Estimate burn rate based on minutes elapsed today (or min 60 mins)
+			midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			minsToday := now.Sub(midnight).Minutes()
+			if minsToday > 0 {
+				burnRate = float64(usage.TokensToday) / minsToday
+			}
+		}
+
 		ps := ProviderStats{
 			Name:           p.Name(),
 			Status:         status,
 			CooldownTime:   remaining,
-			TokensToday:    0,
-			TokensThisWeek: 0,
-			BurnRatePerMin: 0,
+			SessionsCount:  usage.TotalSessions,
+			TokensToday:    usage.TokensToday,
+			TokensThisWeek: usage.TokensThisWeek,
+			BurnRatePerMin: burnRate,
 		}
 		results = append(results, ps)
 	}
@@ -62,11 +74,12 @@ func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats
 func RenderDashboard(statsList []ProviderStats) string {
 	var sb strings.Builder
 
-	sb.WriteString("====================================================================\n")
-	sb.WriteString("                       TORN HYPERVISOR STATS                        \n")
-	sb.WriteString("====================================================================\n")
-	sb.WriteString(fmt.Sprintf("%-12s | %-16s | %-14s | %-12s\n", "PROVIDER", "STATUS", "COOLDOWN", "BURN RATE"))
-	sb.WriteString("-------------+------------------+----------------+--------------\n")
+	sb.WriteString("========================================================================================\n")
+	sb.WriteString("                                 TORN HYPERVISOR STATS                                  \n")
+	sb.WriteString("========================================================================================\n")
+	sb.WriteString(fmt.Sprintf("%-10s | %-14s | %-12s | %-12s | %-12s | %-12s\n",
+		"PROVIDER", "STATUS", "COOLDOWN", "SESSIONS", "TOKENS TODAY", "THIS WEEK"))
+	sb.WriteString("-----------+----------------+--------------+--------------+--------------+--------------\n")
 
 	for _, ps := range statsList {
 		statusIcon := "🟢 LIBRE"
@@ -81,19 +94,31 @@ func RenderDashboard(statsList []ProviderStats) string {
 			cooldownStr = cooldown.FormatDuration(ps.CooldownTime)
 		}
 
-		burnStr := fmt.Sprintf("%.0f tok/m", ps.BurnRatePerMin)
-		if ps.BurnRatePerMin == 0 {
-			burnStr = "--"
+		tokensTodayStr := fmt.Sprintf("%d", ps.TokensToday)
+		if ps.TokensToday == 0 {
+			tokensTodayStr = "--"
 		}
 
-		sb.WriteString(fmt.Sprintf("%-12s | %-16s | %-14s | %-12s\n",
+		tokensWeekStr := fmt.Sprintf("%d", ps.TokensThisWeek)
+		if ps.TokensThisWeek == 0 {
+			tokensWeekStr = "--"
+		}
+
+		sessionsStr := fmt.Sprintf("%d", ps.SessionsCount)
+		if ps.SessionsCount == 0 {
+			sessionsStr = "--"
+		}
+
+		sb.WriteString(fmt.Sprintf("%-10s | %-14s | %-12s | %-12s | %-12s | %-12s\n",
 			ps.Name,
 			statusIcon,
 			cooldownStr,
-			burnStr,
+			sessionsStr,
+			tokensTodayStr,
+			tokensWeekStr,
 		))
 	}
-	sb.WriteString("====================================================================\n")
+	sb.WriteString("========================================================================================\n")
 
 	return sb.String()
 }

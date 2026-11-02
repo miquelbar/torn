@@ -119,8 +119,8 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 	}
 
 	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	// Explicit 10 MB buffer to prevent failure on large tool outputs
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -128,48 +128,132 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 			continue
 		}
 
-		var raw map[string]interface{}
+		var raw map[string]any
 		if err := json.Unmarshal(line, &raw); err != nil {
 			continue
 		}
 
-		// Claude jsonl typically records role/message
+		lineType, _ := raw["type"].(string)
+		msgMap, _ := raw["message"].(map[string]any)
 		role, _ := raw["role"].(string)
-		content, _ := raw["content"].(string)
 
-		if content == "" {
-			// Check if message is nested
-			if msg, ok := raw["message"].(map[string]interface{}); ok {
-				if r, ok := msg["role"].(string); ok {
-					role = r
+		if lineType == "user" || (msgMap != nil && msgMap["role"] == "user") || role == "user" {
+			var rawContent any
+			if msgMap != nil {
+				rawContent = msgMap["content"]
+			}
+			if rawContent == nil {
+				rawContent = raw["display"]
+			}
+			if rawContent == nil {
+				rawContent = raw["content"]
+			}
+
+			extracted := ParseContentBlock(rawContent)
+			if extracted.Text != "" {
+				details.Turns = append(details.Turns, Turn{
+					Role:      "user",
+					Text:      extracted.Text,
+					Timestamp: stat.ModTime(),
+				})
+				details.LastUserMessage = extracted.Text
+			}
+		} else if lineType == "assistant" || (msgMap != nil && msgMap["role"] == "assistant") || role == "assistant" {
+			var rawContent any
+			if msgMap != nil {
+				rawContent = msgMap["content"]
+			}
+			if rawContent == nil {
+				rawContent = raw["content"]
+			}
+
+			extracted := ParseContentBlock(rawContent)
+
+			// Extract tokens
+			var turnTokens int
+			if msgMap != nil {
+				if usage, ok := msgMap["usage"].(map[string]any); ok {
+					inTok := toInt(usage["input_tokens"]) + toInt(usage["cache_read_input_tokens"]) + toInt(usage["cache_creation_input_tokens"])
+					outTok := toInt(usage["output_tokens"])
+					turnTokens = inTok + outTok
+					details.TotalTokens += turnTokens
 				}
-				if c, ok := msg["content"].(string); ok {
-					content = c
+			}
+
+			if extracted.Text != "" || len(extracted.Tools) > 0 {
+				details.Turns = append(details.Turns, Turn{
+					Role:      "assistant",
+					Text:      extracted.Text,
+					Tools:     extracted.Tools,
+					Tokens:    turnTokens,
+					Timestamp: stat.ModTime(),
+				})
+				if extracted.Text != "" {
+					details.LastAssistantMessage = extracted.Text
 				}
-			}
-		}
-
-		if content == "" && raw["display"] != nil {
-			content, _ = raw["display"].(string)
-			if role == "" {
-				role = "user"
-			}
-		}
-
-		if content != "" {
-			turn := Turn{
-				Role:      role,
-				Text:      content,
-				Timestamp: stat.ModTime(),
-			}
-			details.Turns = append(details.Turns, turn)
-			if role == "user" {
-				details.LastUserMessage = content
-			} else {
-				details.LastAssistantMessage = content
 			}
 		}
 	}
 
-	return details, nil
+	return details, scanner.Err()
+}
+
+func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
+	var metrics UsageMetrics
+	projectsDir := filepath.Join(c.baseDir, "projects")
+
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return metrics, nil
+	}
+
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	startOfWeek := startOfDay.AddDate(0, 0, -7)
+
+	for _, pEntry := range entries {
+		if !pEntry.IsDir() {
+			continue
+		}
+		pDir := filepath.Join(projectsDir, pEntry.Name())
+		files, err := os.ReadDir(pDir)
+		if err != nil {
+			continue
+		}
+
+		for _, f := range files {
+			if !strings.HasSuffix(f.Name(), ".jsonl") {
+				continue
+			}
+			metrics.TotalSessions++
+			fInfo, err := f.Info()
+			if err != nil || fInfo.ModTime().Before(startOfWeek) {
+				continue
+			}
+
+			details, err := c.ParseSession(filepath.Join(pDir, f.Name()))
+			if err == nil && details.TotalTokens > 0 {
+				metrics.TokensThisWeek += details.TotalTokens
+				if fInfo.ModTime().After(startOfDay) {
+					metrics.TokensToday += details.TotalTokens
+				}
+			}
+		}
+	}
+
+	return metrics, nil
+}
+
+func toInt(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	}
+	return 0
 }

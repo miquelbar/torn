@@ -1,12 +1,12 @@
 package provider
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -118,25 +118,96 @@ func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error)
 		Turns: make([]Turn, 0),
 	}
 
-	// Read log files inside directory or standalone file
-	if stat.IsDir() {
-		entries, err := os.ReadDir(sessionPath)
-		if err == nil {
-			for _, entry := range entries {
-				if strings.HasSuffix(entry.Name(), ".md") || strings.HasSuffix(entry.Name(), ".txt") {
-					content, err := os.ReadFile(filepath.Join(sessionPath, entry.Name()))
-					if err == nil && len(content) > 0 {
-						details.Turns = append(details.Turns, Turn{
-							Role:      "assistant",
-							Text:      string(content),
-							Timestamp: stat.ModTime(),
-						})
-						details.LastAssistantMessage = string(content)
-					}
+	messagesFile := filepath.Join(sessionPath, "messages.jsonl")
+	if !stat.IsDir() {
+		messagesFile = sessionPath
+	}
+
+	f, err := os.Open(messagesFile)
+	if err != nil {
+		return details, nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var row struct {
+			Role             string `json:"role"`
+			Content          any    `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		}
+
+		if err := json.Unmarshal(line, &row); err != nil {
+			continue
+		}
+
+		extracted := ParseContentBlock(row.Content)
+
+		var tools []string
+		for _, tc := range row.ToolCalls {
+			toolStr := tc.Function.Name
+			argSummary := extractArgSummary(tc.Function.Arguments)
+			if argSummary != "" {
+				toolStr = fmt.Sprintf("%s(%s)", tc.Function.Name, argSummary)
+			}
+			tools = append(tools, toolStr)
+		}
+
+		if row.Role == "user" && extracted.Text != "" {
+			details.Turns = append(details.Turns, Turn{
+				Role:      "user",
+				Text:      extracted.Text,
+				Timestamp: stat.ModTime(),
+			})
+			details.LastUserMessage = extracted.Text
+		} else if row.Role == "assistant" {
+			text := extracted.Text
+			if text == "" && row.ReasoningContent != "" {
+				text = row.ReasoningContent
+			}
+			if text != "" || len(tools) > 0 {
+				details.Turns = append(details.Turns, Turn{
+					Role:      "assistant",
+					Text:      text,
+					Tools:     tools,
+					Timestamp: stat.ModTime(),
+				})
+				if text != "" {
+					details.LastAssistantMessage = text
 				}
 			}
 		}
 	}
 
-	return details, nil
+	return details, scanner.Err()
+}
+
+func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
+	var metrics UsageMetrics
+	indexPath := filepath.Join(v.baseDir, "logs", "session", ".session_index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return metrics, nil
+	}
+
+	var index map[string]vibeIndexEntry
+	if err := json.Unmarshal(data, &index); err != nil {
+		return metrics, nil
+	}
+
+	metrics.TotalSessions = len(index)
+	return metrics, nil
 }

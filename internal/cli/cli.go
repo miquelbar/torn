@@ -101,7 +101,6 @@ func (a *App) Run(args []string) error {
 	case "sync":
 		return a.RunSync()
 	default:
-		// Check if it's a relay command: `torn <cli> [--drop N] [--fresh]` or flags
 		return a.parseAndRunRelay(args)
 	}
 }
@@ -112,6 +111,8 @@ func (a *App) parseAndRunRelay(args []string) error {
 
 	dropN := fs.Int("drop", 0, "Drop the last N turns before handoff")
 	fresh := fs.Bool("fresh", false, "Start a fresh task handoff")
+	dryRun := fs.Bool("dry-run", false, "Simulate relay without executing or altering state")
+	fs.BoolVar(dryRun, "n", false, "Alias for --dry-run")
 
 	var targetCLI string
 	var flagArgs []string
@@ -133,6 +134,7 @@ func (a *App) parseAndRunRelay(args []string) error {
 	return a.RunRelay(targetCLI, handoff.Options{
 		DropLastNTurns: *dropN,
 		Fresh:          *fresh,
+		DryRun:         *dryRun,
 	})
 }
 
@@ -148,13 +150,43 @@ func (a *App) RunRelay(targetCLI string, opts handoff.Options) error {
 		return fmt.Errorf("loading state: %w", err)
 	}
 
-	// 1. Determine outgoing provider
+	// 1. Determine outgoing provider by checking state or discovering disk sessions
 	fromCLI := state.ActiveCLI
+	var detectedSession *provider.Session
+	var details *provider.SessionDetails
+
+	// Search disk for latest active session across providers
+	for _, p := range a.Registry.All() {
+		sess, err := p.DetectLatestSession(proj.Path)
+		if err == nil && sess != nil {
+			if detectedSession == nil || sess.UpdatedAt.After(detectedSession.UpdatedAt) {
+				detectedSession = sess
+				fromCLI = p.Name()
+			}
+		}
+	}
+
 	if fromCLI == "" {
 		fromCLI = "claude"
 	}
 
-	// 2. Determine target provider
+	// 2. Extract context from detected session if not fresh
+	if !opts.Fresh && detectedSession != nil {
+		if p, err := a.Registry.Get(detectedSession.Provider); err == nil {
+			d, err := p.ParseSession(detectedSession.Path)
+			if err == nil {
+				details = d
+			}
+		}
+	}
+	if details == nil {
+		details = &provider.SessionDetails{}
+		if detectedSession != nil {
+			details.Session = *detectedSession
+		}
+	}
+
+	// 3. Determine target provider
 	now := time.Now()
 	var targetProvider provider.Provider
 
@@ -173,7 +205,17 @@ func (a *App) RunRelay(targetCLI string, opts handoff.Options) error {
 		targetProvider = next
 	}
 
-	// Record cooldown on outgoing provider if switching
+	// 4. Build handoff prompt
+	prompt := a.Builder.Build(proj, fromCLI, targetProvider.Name(), details, opts)
+	args := targetProvider.FormatExecArgs(prompt)
+
+	// 5. Handle --dry-run
+	if opts.DryRun {
+		a.renderDryRun(fromCLI, detectedSession, targetProvider, args, prompt, len(details.Turns))
+		return nil
+	}
+
+	// 6. Record cooldown on outgoing provider if switching
 	if fromCLI != targetProvider.Name() {
 		fromProv, _ := a.Registry.Get(fromCLI)
 		cooldownDur := 4 * time.Hour
@@ -183,26 +225,7 @@ func (a *App) RunRelay(targetCLI string, opts handoff.Options) error {
 		a.Cooldown.SetCooldown(fromCLI, state, cooldownDur, now)
 	}
 
-	// 3. Extract outgoing session context if not fresh
-	var details *provider.SessionDetails
-	if !opts.Fresh {
-		if fromProv, err := a.Registry.Get(fromCLI); err == nil {
-			if sess, err := fromProv.DetectLatestSession(proj.Path); err == nil && sess != nil {
-				d, err := fromProv.ParseSession(sess.Path)
-				if err == nil {
-					details = d
-				}
-			}
-		}
-	}
-	if details == nil {
-		details = &provider.SessionDetails{}
-	}
-
-	// 4. Build handoff prompt
-	prompt := a.Builder.Build(proj, fromCLI, targetProvider.Name(), details, opts)
-
-	// 5. Update state & append history
+	// 7. Update state & append history
 	state.ActiveCLI = targetProvider.Name()
 	state.LastHandoff = now
 	state.RelayCount++
@@ -224,9 +247,35 @@ func (a *App) RunRelay(targetCLI string, opts handoff.Options) error {
 		Dropped:     opts.DropLastNTurns,
 	})
 
-	// 6. Execute process replacement with injected argv[1]
-	args := targetProvider.FormatExecArgs(prompt)
+	// 8. Execute process replacement with injected argv[1]
 	return a.Executor.Execute(targetProvider.BinaryName(), args[1:], proj.Path)
+}
+
+func (a *App) renderDryRun(fromCLI string, sess *provider.Session, target provider.Provider, args []string, prompt string, turnsCount int) {
+	fmt.Fprintln(a.Out, "================================================================================")
+	fmt.Fprintln(a.Out, "                               TORN RELAY DRY-RUN                               ")
+	fmt.Fprintln(a.Out, "================================================================================")
+
+	sessionPath := "(ninguna sesión previa detectada)"
+	if sess != nil {
+		sessionPath = sess.Path
+	}
+	fmt.Fprintf(a.Out, "• Origen detectado: %s\n", fromCLI)
+	fmt.Fprintf(a.Out, "  Archivo:          %s\n", sessionPath)
+	fmt.Fprintf(a.Out, "  Turnos parseados: %d\n", turnsCount)
+	fmt.Fprintf(a.Out, "• Destino:          %s\n", target.Name())
+
+	cmdDisplay := target.BinaryName()
+	if len(args) > 1 {
+		cmdDisplay = fmt.Sprintf("%s %s \"<HANDOFF_PROMPT>\"", target.BinaryName(), strings.Join(args[1:len(args)-1], " "))
+	}
+	fmt.Fprintf(a.Out, "• Invocación Exec:  %s\n\n", strings.TrimSpace(cmdDisplay))
+	fmt.Fprintln(a.Out, "--------------------------------------------------------------------------------")
+	fmt.Fprintln(a.Out, "PROMPT DE HANDOFF GENERADO (inyectado vía argv):")
+	fmt.Fprintln(a.Out, "--------------------------------------------------------------------------------")
+	fmt.Fprintln(a.Out, prompt)
+	fmt.Fprintln(a.Out, "================================================================================")
+	fmt.Fprintln(a.Out, "Dry-run completado. No se alteró ningún estado ni se ejecutó ningún proceso.")
 }
 
 // RunPrep copies a standardized closing prompt to clipboard.
@@ -328,9 +377,11 @@ USO:
 FLAGS DE RELEVO:
   --drop N                 Amputa los últimos N turnos antes de pasar el testigo
   --fresh                  Limpia la cadena acumulada e inicia tarea fresca
+  --dry-run, -n            Simula la detección y muestra el handoff sin ejecutar
 
 EJEMPLOS:
   torn                     Relevo automático por failover al siguiente CLI libre
+  torn --dry-run           Comprueba qué handoff se generaría sin ejecutar nada
   torn claude              Relevo voluntario de vuelta a Claude
   torn codex --drop 2      Relevo a Codex amputando los últimos 2 turnos
   torn codex --fresh       Relevo a Codex con contexto limpio para nueva feature

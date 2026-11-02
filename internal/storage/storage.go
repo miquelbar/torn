@@ -51,7 +51,7 @@ func New(baseDir string) (*Store, error) {
 		baseDir = resolved
 	}
 
-	if err := os.MkdirAll(baseDir, 0755); err != nil {
+	if err := os.MkdirAll(baseDir, 0700); err != nil {
 		return nil, fmt.Errorf("creating base storage dir %q: %w", baseDir, err)
 	}
 
@@ -103,7 +103,7 @@ func (s *Store) SaveState(info *project.Info, state *State) error {
 	defer s.mu.Unlock()
 
 	dir := s.ProjectDir(info)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating project storage dir %q: %w", dir, err)
 	}
 
@@ -136,7 +136,7 @@ func (s *Store) AppendHistory(info *project.Info, entry *HistoryEntry) error {
 	defer s.mu.Unlock()
 
 	dir := s.ProjectDir(info)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating project storage dir %q: %w", dir, err)
 	}
 

@@ -73,19 +73,38 @@ func TestCLIStatsCommand(t *testing.T) {
 	}
 }
 
-func TestCLISyncCommand(t *testing.T) {
+func TestCLIDryRun(t *testing.T) {
 	var out, errOut bytes.Buffer
-	app, err := NewApp(&out, &errOut, t.TempDir(), nil, nil)
+	executed := false
+	mockRunner := func(binaryPath string, argv []string, env []string) error {
+		executed = true
+		return nil
+	}
+
+	app, err := NewApp(&out, &errOut, t.TempDir(), mockRunner, nil)
 	if err != nil {
 		t.Fatalf("failed to create app: %v", err)
 	}
 
-	if err := app.Run([]string{"sync"}); err != nil {
-		t.Fatalf("sync failed: %v", err)
+	// Run with --dry-run
+	err = app.Run([]string{"--dry-run", "codex"})
+	if err != nil {
+		t.Fatalf("Run --dry-run failed: %v", err)
 	}
 
-	if !strings.Contains(out.String(), "[TORN SYNC]") {
-		t.Errorf("expected sync output: %s", out.String())
+	if executed {
+		t.Fatalf("expected executor NOT to be called under --dry-run")
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "TORN RELAY DRY-RUN") {
+		t.Errorf("expected dry-run header in output: %s", output)
+	}
+	if !strings.Contains(output, "Destino:          codex") {
+		t.Errorf("expected target codex in output: %s", output)
+	}
+	if !strings.Contains(output, "PROMPT DE HANDOFF GENERADO") {
+		t.Errorf("expected handoff prompt section: %s", output)
 	}
 }
 
@@ -106,17 +125,14 @@ func TestCLIRelayDispatchWithMockExecutor(t *testing.T) {
 		t.Fatalf("failed to create app: %v", err)
 	}
 
-	// Register a mock provider that doesn't rely on global directories
-	// In this case, claude or codex binary can be simulated
 	app.Executor = executor.New(mockRunner)
 
-	// Run relay with mock binary that exists in system path, e.g. "sh" or "git"
 	err = app.RunRelay("claude", struct {
 		DropLastNTurns int
 		Fresh          bool
+		DryRun         bool
 	}{Fresh: true})
 
-	// Claude binary is installed on user machine: /Users/miquel/.local/bin/claude
 	if err != nil {
 		t.Fatalf("RunRelay failed: %v", err)
 	}

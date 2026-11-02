@@ -13,6 +13,7 @@ import (
 type Options struct {
 	DropLastNTurns int  // --drop N
 	Fresh          bool // --fresh
+	DryRun         bool // --dry-run
 }
 
 // Builder constructs high-density handoff prompts for AI agents.
@@ -56,10 +57,9 @@ func (b *Builder) Build(proj *project.Info, fromCLI string, toCLI string, detail
 
 	if len(turns) > 0 {
 		sb.WriteString("### Recent Progress Summary\n\n")
-		// Include up to last 4 relevant turns
 		startIdx := 0
-		if len(turns) > 4 {
-			startIdx = len(turns) - 4
+		if len(turns) > 5 {
+			startIdx = len(turns) - 5
 		}
 		for i := startIdx; i < len(turns); i++ {
 			t := turns[i]
@@ -71,7 +71,12 @@ func (b *Builder) Build(proj *project.Info, fromCLI string, toCLI string, detail
 			if len(text) > 400 {
 				text = text[:400] + "... [truncated]"
 			}
-			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", roleLabel, text))
+			if text != "" {
+				sb.WriteString(fmt.Sprintf("- **%s**: %s\n", roleLabel, text))
+			}
+			if len(t.Tools) > 0 {
+				sb.WriteString(fmt.Sprintf("  *Actions:* `%s`\n", strings.Join(t.Tools, "`, `")))
+			}
 		}
 		sb.WriteString("\n")
 	} else if details.LastAssistantMessage != "" {

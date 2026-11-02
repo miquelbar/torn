@@ -56,7 +56,6 @@ func (c *CodexProvider) DetectLatestSession(targetCwd string) (*Session, error) 
 	cleanTarget := filepath.Clean(targetCwd)
 	var candidates []codexSessionCandidate
 
-	// Walk date subfolders
 	err := filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
 			return nil
@@ -67,7 +66,6 @@ func (c *CodexProvider) DetectLatestSession(targetCwd string) (*Session, error) 
 			return nil
 		}
 
-		// Inspect session metadata in the first lines to match CWD
 		sessionCwd, sessionID := c.inspectSessionMeta(path)
 		if sessionCwd != "" && filepath.Clean(sessionCwd) == cleanTarget {
 			candidates = append(candidates, codexSessionCandidate{
@@ -110,9 +108,10 @@ func (c *CodexProvider) inspectSessionMeta(path string) (string, string) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	// Inspect up to first 20 lines
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
 	linesRead := 0
-	for scanner.Scan() && linesRead < 20 {
+	for scanner.Scan() && linesRead < 30 {
 		linesRead++
 		var meta struct {
 			Type    string `json:"type"`
@@ -158,8 +157,7 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 	}
 
 	scanner := bufio.NewScanner(f)
-	buf := make([]byte, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -167,50 +165,113 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 			continue
 		}
 
-		var entry struct {
-			Type    string `json:"type"`
-			Payload struct {
-				Role    string `json:"role"`
-				Message string `json:"message"`
-				Text    string `json:"text"`
-				Content string `json:"content"`
-			} `json:"payload"`
-		}
-
-		if err := json.Unmarshal(line, &entry); err != nil {
+		var raw map[string]any
+		if err := json.Unmarshal(line, &raw); err != nil {
 			continue
 		}
 
-		text := entry.Payload.Text
-		if text == "" {
-			text = entry.Payload.Content
-		}
-		if text == "" {
-			text = entry.Payload.Message
+		lineType, _ := raw["type"].(string)
+		payload, _ := raw["payload"].(map[string]any)
+		if payload == nil {
+			continue
 		}
 
-		role := entry.Payload.Role
-		if role == "" {
-			if entry.Type == "user_message" || entry.Type == "user" {
-				role = "user"
-			} else if entry.Type == "assistant_message" || entry.Type == "response_item" {
-				role = "assistant"
+		// 1. Check response_item
+		if lineType == "response_item" {
+			role, _ := payload["role"].(string)
+			extracted := ParseContentBlock(payload["content"])
+			if extracted.Text == "" {
+				extracted = ParseContentBlock(payload["text"])
 			}
-		}
 
-		if text != "" && role != "" {
-			details.Turns = append(details.Turns, Turn{
-				Role:      role,
-				Text:      text,
-				Timestamp: stat.ModTime(),
-			})
-			if role == "user" {
-				details.LastUserMessage = text
-			} else {
-				details.LastAssistantMessage = text
+			if extracted.Text != "" || len(extracted.Tools) > 0 {
+				details.Turns = append(details.Turns, Turn{
+					Role:      role,
+					Text:      extracted.Text,
+					Tools:     extracted.Tools,
+					Timestamp: stat.ModTime(),
+				})
+				if role == "user" && extracted.Text != "" {
+					details.LastUserMessage = extracted.Text
+				} else if role == "assistant" && extracted.Text != "" {
+					details.LastAssistantMessage = extracted.Text
+				}
+			}
+		} else if lineType == "event_msg" {
+			// Check item_completed in event_msg
+			item, _ := payload["item"].(map[string]any)
+			if item != nil {
+				itemType, _ := item["type"].(string)
+				switch itemType {
+				case "UserMessage":
+					extracted := ParseContentBlock(item["content"])
+					if extracted.Text != "" {
+						details.Turns = append(details.Turns, Turn{
+							Role:      "user",
+							Text:      extracted.Text,
+							Timestamp: stat.ModTime(),
+						})
+						details.LastUserMessage = extracted.Text
+					}
+				case "AgentMessage":
+					extracted := ParseContentBlock(item["content"])
+					if extracted.Text != "" {
+						details.Turns = append(details.Turns, Turn{
+							Role:      "assistant",
+							Text:      extracted.Text,
+							Timestamp: stat.ModTime(),
+						})
+						details.LastAssistantMessage = extracted.Text
+					}
+				case "CommandExecution":
+					cmdList, _ := item["command"].([]any)
+					var parts []string
+					for _, c := range cmdList {
+						if s, ok := c.(string); ok {
+							parts = append(parts, s)
+						}
+					}
+					if len(parts) > 0 {
+						details.Turns = append(details.Turns, Turn{
+							Role:      "assistant",
+							Tools:     []string{fmt.Sprintf("exec(%s)", strings.Join(parts, " "))},
+							Timestamp: stat.ModTime(),
+						})
+					}
+				}
 			}
 		}
 	}
 
-	return details, nil
+	return details, scanner.Err()
+}
+
+func (c *CodexProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
+	var metrics UsageMetrics
+	sessionsDir := filepath.Join(c.baseDir, "sessions")
+
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	startOfWeek := startOfDay.AddDate(0, 0, -7)
+
+	_ = filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		metrics.TotalSessions++
+		info, err := d.Info()
+		if err != nil || info.ModTime().Before(startOfWeek) {
+			return nil
+		}
+
+		details, err := c.ParseSession(path)
+		if err == nil && details.TotalTokens > 0 {
+			metrics.TokensThisWeek += details.TotalTokens
+			if info.ModTime().After(startOfDay) {
+				metrics.TokensToday += details.TotalTokens
+			}
+		}
+		return nil
+	})
+
+	return metrics, nil
 }
