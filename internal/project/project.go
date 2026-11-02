@@ -13,10 +13,10 @@ import (
 
 // Info represents metadata for a target project workspace.
 type Info struct {
-	Path     string `json:"path"`
-	Hash     string `json:"hash"`
-	GitHead  string `json:"git_head"`
-	IsGit    bool   `json:"is_git"`
+	Path    string `json:"path"`
+	Hash    string `json:"hash"`
+	GitHead string `json:"git_head"`
+	IsGit   bool   `json:"is_git"`
 }
 
 // GitRunner defines the capability to execute git commands in a directory.
