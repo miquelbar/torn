@@ -1,104 +1,146 @@
 # torn
 
-A lightweight, performant service written in Go.
+Zero-footprint local hypervisor written in Go, designed to manage bidirectional handoffs, quota telemetry, and context recovery across official AI CLIs (`claude`, `codex`, `vibe`, `agy`, etc.) without breaking sandboxes or touching repository state.
 
-## Overview
+## Core Features
 
-`torn` is designed with simplicity, high reliability, and clean architecture principles. It provides a modular foundation with structured logging, lifecycle management, and strict configuration validation.
+- **Zero-Footprint in Repositories:** Never writes control files, caches, or handoff notes into the target repository. State is stored in an isolated directory under `~/.local/share/torn/projects/<hash>/`.
+- **Anti-Sandbox Context Injection:** Injects handoff context directly into `argv[1]` upon process invocation via `syscall.Exec`, avoiding sandbox file permission restrictions (`/tmp` or `$HOME`).
+- **Resilient CWD & Git Inspection:** Scans CLI session logs filtering strictly by current project workspace `cwd` and validates against current `git rev-parse HEAD`.
+- **Soft Landing (`torn prep`):** Copies standardized handoff prompts to the system clipboard when reaching quota limits (85-90%).
+- **Unified Quota & Cooldowns (`torn stats`):** Real-time traffic light dashboard (🟢 LIBRE, 🟡 EN USO, 🔴 BLOQUEADO) with cooldown countdowns and burn rates.
+- **Cross-Session Search (`torn find <query>`):** Searches local session histories across all CLI tools for keywords.
+- **Next-Day Resume (`torn resume`):** Restores active context from previous sessions into your preferred CLI.
 
-## Prerequisites
+## Installation & Build
 
-- [Go](https://go.dev/dl/) 1.22 or higher
+### Prerequisites
+
+- Go 1.22 or higher
 - `make`
 
-## Getting Started
-
-### Local Setup
-
-To set up the local development environment:
+### Building from Source
 
 ```bash
 make setup
-```
-
-### Building
-
-Compile the application binary to `bin/torn`:
-
-```bash
 make build
 ```
 
-### Running
-
-Run directly using Go:
+Binary is compiled to `bin/torn`. To install globally into your `$GOPATH/bin` or `$HOME/.local/bin`:
 
 ```bash
-make run
+cp bin/torn ~/.local/bin/torn
 ```
 
-Or execute the built binary:
+### Running Tests & Quality Checks
 
 ```bash
-./bin/torn
+make check
 ```
 
-### Testing
+## Command Reference
 
-Run unit tests with race detection:
+### 1. Relay (`torn [cli]`)
+
+Switches execution to the specified CLI (or the next available free CLI in queue):
 
 ```bash
-make test
+# Automatic failover relay to the next available CLI
+torn
+
+# Intentional return to primary agent
+torn claude
+
+# Relay to Codex dropping the last 2 turns (prune loops or hallucinations)
+torn codex --drop 2
+
+# Fresh relay clearing the accumulated chain for a new feature
+torn codex --fresh
 ```
 
-Generate test coverage reports:
+### 2. Soft Landing (`torn prep`)
+
+When nearing your native CLI quota limit (85-90%), run `torn prep` to copy a structured closing prompt to the clipboard:
 
 ```bash
-make test-coverage
+torn prep
 ```
 
-### Code Quality and Linting
+Paste it into the active CLI session so the agent documents its current state, test coverage, and pending tasks before hitting limits.
 
-Run formatting and vet checks:
+### 3. Global Stats Dashboard (`torn stats`)
+
+Inspect operational availability, cooldown countdowns, and token metrics:
 
 ```bash
-make lint
+torn stats
 ```
 
-## Configuration
+Output preview:
+```txt
+====================================================================
+                       TORN HYPERVISOR STATS                        
+====================================================================
+PROVIDER     | STATUS           | COOLDOWN       | BURN RATE   
+-------------+------------------+----------------+--------------
+claude       | 🟢 LIBRE          | --             | --          
+codex        | 🟡 EN USO         | --             | 450 tok/m   
+vibe         | 🔴 BLOQUEADO      | 1h 45m         | --          
+agy          | 🟢 LIBRE          | --             | --          
+====================================================================
+```
 
-Configuration can be customized via environment variables:
+### 4. Unified Session Search (`torn find <query>`)
 
-| Variable | Type | Default | Description |
-|---|---|---|---|
-| `TORN_ENV` | string | `development` | Operating environment (`development`, `production`, etc.) |
-| `TORN_PORT` | int | `8080` | Port for service listener |
-| `TORN_SHUTDOWN_TIMEOUT` | duration | `5s` | Maximum time allowed for graceful shutdown |
-| `TORN_LOG_LEVEL` | string | `info` | Logging verbosity (`debug`, `info`, `warn`, `error`) |
+Search across past local sessions for a keyword or issue:
 
-## Project Structure
+```bash
+torn find "deadlock"
+```
+
+### 5. Session Resume (`torn resume [cli]`)
+
+Pick up the latest session thread from yesterday or earlier today:
+
+```bash
+torn resume claude
+```
+
+### 6. Rules Consistency (`torn sync`)
+
+Ensures rules and agent configurations are aligned in `$HOME` without injecting files into the repository:
+
+```bash
+torn sync
+```
+
+## Project Architecture
 
 ```txt
-torn/
-├── cmd/
-│   └── torn/             # Application entrypoint
-├── internal/
-│   ├── app/              # Core application lifecycle & orchestration
-│   ├── config/           # Configuration parsing & validation
-│   └── logger/           # Structured logging
-├── Makefile              # Build automation & verification targets
-├── go.mod                # Go module dependencies
-└── LICENSE               # MIT License
+cmd/torn/                       # CLI entrypoint
+internal/
+  cli/                          # Command routing and flag parsing
+  clipboard/                    # System clipboard integration (macOS/Linux)
+  cooldown/                     # Rate-limit cooldown state tracking
+  executor/                     # Sandbox-safe syscall.Exec process replacement
+  handoff/                      # Prompt synthesizer with --drop and --fresh
+  project/                      # Canonical path hashing and Git HEAD inspection
+  provider/                     # Log discovery & parsers (claude, codex, vibe, agy)
+  search/                       # Cross-provider local session search
+  stats/                        # Telemetry collector and dashboard renderer
+  storage/                      # Isolated zero-footprint state store
+Makefile                        # Automation targets
+go.mod                          # Go module dependencies
+LICENSE                         # MIT License
 ```
 
 ## Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feat/my-feature`)
-3. Follow [Conventional Commits](https://www.conventionalcommits.org/) for commit messages (e.g. `feat: description` or `fix: description`)
-4. Verify tests and linter pass (`make check`)
-5. Open a Pull Request
+1. Create a feature branch (`git checkout -b feat/my-improvement`)
+2. Follow [Conventional Commits](https://www.conventionalcommits.org/) (single-line only, no co-author trailers)
+3. Run `make check`
+4. Submit a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License. See [LICENSE](LICENSE) for details.
