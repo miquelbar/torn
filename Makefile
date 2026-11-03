@@ -20,8 +20,10 @@ setup:
 	@grep -qxF 'TREE.md' .git/info/exclude 2>/dev/null || echo 'TREE.md' >> .git/info/exclude
 	@grep -qxF '.agents/' .git/info/exclude 2>/dev/null || echo '.agents/' >> .git/info/exclude
 	@echo "Verifying local hooks..."
+	@test -f scripts/hooks/pre-commit && test ! -f .git/hooks/pre-commit && cp scripts/hooks/pre-commit .git/hooks/pre-commit || true
 	@test -f .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg || true
 	@test -f .git/hooks/prepare-commit-msg && chmod +x .git/hooks/prepare-commit-msg || true
+	@test -f .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit || true
 	@echo "Setup completed successfully."
 
 build:
