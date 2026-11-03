@@ -49,6 +49,14 @@ func (m *Manager) SetCooldown(providerName string, state *storage.State, duratio
 	state.Cooldowns[providerName] = now.Add(duration)
 }
 
+// SetCooldownUntil sets an explicit cooldown reset time for a provider.
+func (m *Manager) SetCooldownUntil(providerName string, state *storage.State, until time.Time) {
+	if state.Cooldowns == nil {
+		state.Cooldowns = make(map[string]time.Time)
+	}
+	state.Cooldowns[providerName] = until
+}
+
 // ClearCooldown removes any rate-limit cooldown for a provider.
 func (m *Manager) ClearCooldown(providerName string, state *storage.State) {
 	if state.Cooldowns != nil {

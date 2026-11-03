@@ -2,6 +2,7 @@ package handoff
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -79,12 +80,12 @@ func (b *Builder) renderUserIntent(details *provider.SessionDetails) string {
 		return sb.String()
 	}
 
-	// Filter human user turns across entire session (ignoring tool results and consecutive duplicates)
+	// Filter human user turns across entire session (ignoring tool results, pseudo-user messages, and consecutive duplicates)
 	var userTurns []string
 	for _, t := range details.Turns {
 		if t.Role == "user" {
 			txt := strings.TrimSpace(t.Text)
-			if txt != "" && !isToolResultText(txt) {
+			if txt != "" && !isIgnoredUserMessage(txt) {
 				if len(userTurns) > 0 && userTurns[len(userTurns)-1] == txt {
 					continue
 				}
@@ -93,7 +94,7 @@ func (b *Builder) renderUserIntent(details *provider.SessionDetails) string {
 		}
 	}
 
-	if len(userTurns) == 0 && details.LastUserMessage != "" && !isToolResultText(details.LastUserMessage) {
+	if len(userTurns) == 0 && details.LastUserMessage != "" && !isIgnoredUserMessage(details.LastUserMessage) {
 		lastMsg := strings.TrimSpace(details.LastUserMessage)
 		if len(userTurns) == 0 || userTurns[len(userTurns)-1] != lastMsg {
 			userTurns = append(userTurns, lastMsg)
@@ -105,8 +106,12 @@ func (b *Builder) renderUserIntent(details *provider.SessionDetails) string {
 		return sb.String()
 	}
 
-	// Root Objective: first user message (up to 600 chars)
-	root := truncateText(userTurns[0], 600)
+	// Root Objective: first user message (up to 1500 chars if continuation banner, else 600)
+	rootLimit := 600
+	if strings.HasPrefix(userTurns[0], "This session is being continued from a previous conversation") {
+		rootLimit = 1500
+	}
+	root := truncateText(userTurns[0], rootLimit)
 	sb.WriteString(fmt.Sprintf("**Root Objective:**\n> %s\n\n", root))
 
 	// Last directives (up to last 3 user messages)
@@ -152,8 +157,35 @@ func (b *Builder) renderAssistantActions(details *provider.SessionDetails, opts 
 
 	var assistantTurns []provider.Turn
 	for _, t := range turns {
-		if t.Role == "assistant" && (strings.TrimSpace(t.Text) != "" || len(t.Tools) > 0) {
-			assistantTurns = append(assistantTurns, t)
+		if t.Role == "user" && strings.Contains(t.Text, "<task-notification>") {
+			if summary := extractTaskNotificationSummary(t.Text); summary != "" {
+				assistantTurns = append(assistantTurns, provider.Turn{
+					Role:  "assistant",
+					Tools: []string{fmt.Sprintf("task_notification(%s)", summary)},
+				})
+			}
+			continue
+		}
+
+		if t.Role == "assistant" {
+			txt := strings.TrimSpace(t.Text)
+			if isQuotaLimitMessage(txt) {
+				txt = ""
+			}
+			if txt != "" || len(t.Tools) > 0 {
+				if len(assistantTurns) > 0 {
+					prev := assistantTurns[len(assistantTurns)-1]
+					if prev.Text == txt && len(t.Tools) == 0 && len(prev.Tools) == 0 {
+						continue
+					}
+				}
+				assistantTurns = append(assistantTurns, provider.Turn{
+					Role:   "assistant",
+					Text:   txt,
+					Tools:  t.Tools,
+					Tokens: t.Tokens,
+				})
+			}
 		}
 	}
 
@@ -162,19 +194,32 @@ func (b *Builder) renderAssistantActions(details *provider.SessionDetails, opts 
 		if len(assistantTurns) > 5 {
 			startIdx = len(assistantTurns) - 5
 		}
+
+		lastTextIdx := -1
+		for i := len(assistantTurns) - 1; i >= startIdx; i-- {
+			if strings.TrimSpace(assistantTurns[i].Text) != "" {
+				lastTextIdx = i
+				break
+			}
+		}
+
 		for i := startIdx; i < len(assistantTurns); i++ {
 			at := assistantTurns[i]
 			txt := strings.TrimSpace(at.Text)
 			if txt != "" {
-				sb.WriteString(fmt.Sprintf("- **Reasoning:** %s\n", truncateText(txt, 400)))
+				limit := 400
+				if i == lastTextIdx {
+					limit = 2500
+				}
+				sb.WriteString(fmt.Sprintf("- **Reasoning:** %s\n", truncateText(txt, limit)))
 			}
 			if len(at.Tools) > 0 {
 				sb.WriteString(fmt.Sprintf("  *Actions:* `%s`\n", strings.Join(at.Tools, "`, `")))
 			}
 		}
 		sb.WriteString("\n")
-	} else if details.LastAssistantMessage != "" {
-		sb.WriteString(fmt.Sprintf("- **Reasoning:** %s\n\n", truncateText(details.LastAssistantMessage, 400)))
+	} else if details.LastAssistantMessage != "" && !isQuotaLimitMessage(details.LastAssistantMessage) {
+		sb.WriteString(fmt.Sprintf("- **Reasoning:** %s\n\n", truncateText(details.LastAssistantMessage, 2500)))
 	} else {
 		sb.WriteString("*(No outgoing assistant actions)*\n\n")
 	}
@@ -215,6 +260,47 @@ func (b *Builder) renderGitStatus(proj *project.Info) string {
 	}
 
 	return sb.String()
+}
+
+var taskSummaryRegex = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
+
+func extractTaskNotificationSummary(s string) string {
+	m := taskSummaryRegex.FindStringSubmatch(s)
+	if len(m) > 1 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+func isQuotaLimitMessage(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "you've hit your session limit") ||
+		strings.Contains(lower, "rate limit reached") ||
+		strings.Contains(lower, "hit your daily limit") ||
+		strings.Contains(lower, "usage limit reached") ||
+		strings.Contains(lower, "session limit reached")
+}
+
+func isIgnoredUserMessage(s string) bool {
+	if isToolResultText(s) {
+		return true
+	}
+	trimmed := strings.TrimSpace(s)
+	prefixes := []string{
+		"<task-notification",
+		"<command-message",
+		"<command-name",
+		"<local-command-stdout",
+		"<bash-stdout",
+		"<bash-stderr",
+		"[Request interrupted",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func isToolResultText(s string) bool {

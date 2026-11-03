@@ -211,18 +211,22 @@ func (a *App) RunRelay(targetCLI string, opts handoff.Options) error {
 
 	// 5. Handle --dry-run
 	if opts.DryRun {
-		a.renderDryRun(fromCLI, detectedSession, targetProvider, args, prompt, len(details.Turns))
+		a.renderDryRun(fromCLI, detectedSession, targetProvider, args, prompt, len(details.Turns), details.CooldownUntil)
 		return nil
 	}
 
 	// 6. Record cooldown on outgoing provider if switching
 	if fromCLI != targetProvider.Name() {
 		fromProv, _ := a.Registry.Get(fromCLI)
-		cooldownDur := 4 * time.Hour
-		if fromProv != nil {
-			cooldownDur = fromProv.DefaultCooldown()
+		if details.CooldownUntil != nil && details.CooldownUntil.After(now) {
+			a.Cooldown.SetCooldownUntil(fromCLI, state, *details.CooldownUntil)
+		} else {
+			cooldownDur := 4 * time.Hour
+			if fromProv != nil {
+				cooldownDur = fromProv.DefaultCooldown()
+			}
+			a.Cooldown.SetCooldown(fromCLI, state, cooldownDur, now)
 		}
-		a.Cooldown.SetCooldown(fromCLI, state, cooldownDur, now)
 	}
 
 	// 7. Update state & append history
@@ -251,7 +255,7 @@ func (a *App) RunRelay(targetCLI string, opts handoff.Options) error {
 	return a.Executor.Execute(targetProvider.BinaryName(), args[1:], proj.Path)
 }
 
-func (a *App) renderDryRun(fromCLI string, sess *provider.Session, target provider.Provider, args []string, prompt string, turnsCount int) {
+func (a *App) renderDryRun(fromCLI string, sess *provider.Session, target provider.Provider, args []string, prompt string, turnsCount int, cooldownUntil *time.Time) {
 	fmt.Fprintln(a.Out, "================================================================================")
 	fmt.Fprintln(a.Out, "                               TORN RELAY DRY-RUN                               ")
 	fmt.Fprintln(a.Out, "================================================================================")
@@ -263,6 +267,12 @@ func (a *App) renderDryRun(fromCLI string, sess *provider.Session, target provid
 	fmt.Fprintf(a.Out, "• Detected source: %s\n", fromCLI)
 	fmt.Fprintf(a.Out, "  Session file:    %s\n", sessionPath)
 	fmt.Fprintf(a.Out, "  Parsed turns:    %d\n", turnsCount)
+	if cooldownUntil != nil && cooldownUntil.After(time.Now()) {
+		fmt.Fprintf(a.Out, "  Cooldown reset:  %s (%s remaining)\n",
+			cooldownUntil.Format("3:04pm (MST)"),
+			cooldown.FormatDuration(time.Until(*cooldownUntil)),
+		)
+	}
 	fmt.Fprintf(a.Out, "• Target:          %s\n", target.Name())
 
 	cmdDisplay := target.BinaryName()
@@ -311,8 +321,24 @@ func (a *App) RunStats() error {
 		return fmt.Errorf("loading state: %w", err)
 	}
 
+	// Auto-detect dynamic cooldowns from latest session logs
+	now := time.Now()
+	stateChanged := false
+	for _, p := range a.Registry.All() {
+		sess, err := p.DetectLatestSession(proj.Path)
+		if err == nil && sess != nil {
+			if d, err := p.ParseSession(sess.Path); err == nil && d.CooldownUntil != nil && d.CooldownUntil.After(now) {
+				a.Cooldown.SetCooldownUntil(p.Name(), state, *d.CooldownUntil)
+				stateChanged = true
+			}
+		}
+	}
+	if stateChanged {
+		_ = a.Store.SaveState(proj, state)
+	}
+
 	collector := stats.NewCollector(a.Registry, a.Cooldown)
-	metrics := collector.Collect(state, time.Now())
+	metrics := collector.Collect(state, now)
 
 	fmt.Fprint(a.Out, stats.RenderDashboard(metrics))
 	return nil

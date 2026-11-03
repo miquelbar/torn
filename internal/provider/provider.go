@@ -26,10 +26,11 @@ type Session struct {
 // SessionDetails contains parsed conversation turns and summary metadata.
 type SessionDetails struct {
 	Session
-	Turns                []Turn `json:"turns"`
-	TotalTokens          int64  `json:"total_tokens"`
-	LastUserMessage      string `json:"last_user_message"`
-	LastAssistantMessage string `json:"last_assistant_message"`
+	Turns                []Turn     `json:"turns"`
+	TotalTokens          int64      `json:"total_tokens"`
+	LastUserMessage      string     `json:"last_user_message"`
+	LastAssistantMessage string     `json:"last_assistant_message"`
+	CooldownUntil        *time.Time `json:"cooldown_until,omitempty"`
 }
 
 // UsageMetrics holds calculated token counts and rates for a provider.

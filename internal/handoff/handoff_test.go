@@ -162,3 +162,60 @@ func TestBuilderUserDirectivesPreservationAndDeduplication(t *testing.T) {
 		t.Errorf("expected latest directive to be preserved in full without truncation")
 	}
 }
+
+func TestBuilderPseudoUserFilteringAndQuotaLimitFiltering(t *testing.T) {
+	b := NewBuilder()
+	proj := &project.Info{Path: "/app"}
+
+	compactionBanner := "This session is being continued from a previous conversation that ran out of context. " + strings.Repeat("Detailed summary point. ", 40)
+	lastHumanPrompt := "Please verify phase 1C before concluding: all tests passing and no regressions."
+	taskNotification := "<task-notification>\n<task-id>bg85utuzc</task-id>\n<summary>Background command \"run tests\" completed (exit code 0)</summary>\n</task-notification>"
+	substantialReasoning := "Waiting for the suite result. Meanwhile, here is the state of Brief 21: " + strings.Repeat("Verified module A. ", 30)
+	quotaBanner := "You've hit your session limit · resets 12:30pm (Europe/Madrid) · progress saved"
+
+	details := &provider.SessionDetails{
+		Turns: []provider.Turn{
+			{Role: "user", Text: compactionBanner},
+			{Role: "assistant", Text: substantialReasoning},
+			{Role: "user", Text: lastHumanPrompt},
+			{Role: "assistant", Text: quotaBanner},
+			{Role: "user", Text: taskNotification},
+			{Role: "assistant", Text: quotaBanner},
+		},
+	}
+
+	prompt := b.Build(proj, "claude", "codex", details, Options{})
+
+	// 1. Task notification must NOT be under User Directives
+	if strings.Contains(prompt, "<task-notification>") {
+		t.Errorf("task-notification should be filtered from handoff prompt")
+	}
+
+	// 2. Task notification summary should appear as assistant action
+	if !strings.Contains(prompt, "task_notification(Background command \"run tests\" completed (exit code 0))") {
+		t.Errorf("expected task notification summary as action, prompt: %s", prompt)
+	}
+
+	// 3. The last human prompt must be preserved in full (not truncated)
+	if !strings.Contains(prompt, lastHumanPrompt) {
+		t.Errorf("expected last human prompt to be fully preserved: %s", prompt)
+	}
+
+	// 4. Compaction banner in Root Objective should retain extended length (up to 1500 chars)
+	if !strings.Contains(prompt, "Detailed summary point.") {
+		t.Errorf("expected compaction banner in root objective")
+	}
+
+	// 5. Quota limit banner must NOT appear in Reasoning
+	if strings.Contains(prompt, "You've hit your session limit") {
+		t.Errorf("quota limit banner should be filtered from reasoning: %s", prompt)
+	}
+
+	// 6. Substantial reasoning should be preserved with generous limit (>400 chars)
+	if !strings.Contains(prompt, "Waiting for the suite result. Meanwhile, here is the state of Brief 21:") {
+		t.Errorf("expected substantial assistant reasoning")
+	}
+	if !strings.Contains(prompt, "Verified module A.") {
+		t.Errorf("expected substantial reasoning to have generous limit")
+	}
+}

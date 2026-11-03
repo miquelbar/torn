@@ -232,3 +232,40 @@ func TestAgyTranscriptParser(t *testing.T) {
 		t.Errorf("unexpected agy FormatExecArgs: %v", execArgs)
 	}
 }
+
+func TestExtractResetTime(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Madrid")
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, loc)
+	refTime := time.Date(2026, 11, 3, 8, 45, 0, 0, loc)
+
+	// 1. Same-day reset in the future
+	text := "You've hit your session limit · resets 12:30pm (Europe/Madrid) · progress saved"
+	res := ExtractResetTime(text, refTime, now)
+	if res == nil {
+		t.Fatalf("expected reset time, got nil")
+	}
+	expected := time.Date(2026, 11, 3, 12, 30, 0, 0, loc)
+	if !res.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, res)
+	}
+
+	// 2. Next-day reset when candidate hour is before session hour (e.g., late night session)
+	nightRef := time.Date(2026, 11, 3, 23, 15, 0, 0, loc)
+	nightNow := time.Date(2026, 11, 3, 23, 20, 0, 0, loc)
+	nightText := "resets 4am (Europe/Madrid)"
+	nightRes := ExtractResetTime(nightText, nightRef, nightNow)
+	if nightRes == nil {
+		t.Fatalf("expected next-day reset time, got nil")
+	}
+	nightExpected := time.Date(2026, 11, 4, 4, 0, 0, 0, loc)
+	if !nightRes.Equal(nightExpected) {
+		t.Errorf("expected %v, got %v", nightExpected, nightRes)
+	}
+
+	// 3. Past reset (already expired relative to now)
+	oldRef := time.Date(2026, 9, 17, 18, 0, 0, 0, loc)
+	oldRes := ExtractResetTime(text, oldRef, now)
+	if oldRes != nil {
+		t.Errorf("expected nil for expired reset, got %v", oldRes)
+	}
+}

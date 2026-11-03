@@ -50,6 +50,17 @@ func TestCooldownTransitions(t *testing.T) {
 	if status != StatusReady {
 		t.Errorf("expected StatusReady after manual clear, got %v", status)
 	}
+
+	// 6. Set cooldown until explicit time
+	explicitUntil := now.Add(45 * time.Minute)
+	mgr.SetCooldownUntil("codex", state, explicitUntil)
+	status, remaining = mgr.GetStatus("codex", state, now)
+	if status != StatusCooldown {
+		t.Errorf("expected StatusCooldown after SetCooldownUntil, got %v", status)
+	}
+	if remaining <= 0 || remaining > 45*time.Minute {
+		t.Errorf("expected remaining ~45m, got %v", remaining)
+	}
 }
 
 func TestFormatDuration(t *testing.T) {
