@@ -31,6 +31,12 @@ build:
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags="-s -w" -o $(BINARY) $(CMD)
 
+install: build
+	@echo "Installing $(APP_NAME) to $(HOME)/.local/bin..."
+	@mkdir -p $(HOME)/.local/bin
+	cp $(BINARY) $(HOME)/.local/bin/$(APP_NAME)
+	@echo "Installed successfully to $(HOME)/.local/bin/$(APP_NAME)"
+
 run:
 	@go run $(CMD)
 
