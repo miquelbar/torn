@@ -1,32 +1,21 @@
-# Binaries and build artifacts
-bin/
+# Binarios
+/torn
+/bin/
 dist/
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Test and coverage artifacts
 *.test
-*.out
 coverage.html
 
-# Local configuration and runtime data
-.env
-.env.local
-config-dev.yaml
-config.local.yaml
-data/
-*.db
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-*.log
+# Estado local del hipervisor
+.missions/
+.state/
+*.local.json
 
-# OS & Editor files
-.DS_Store
+# IDEs
 .idea/
 .vscode/
 *.swp
-*~
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
