@@ -10,6 +10,9 @@ import (
 // ExecRunner describes the signature of a process replacement execution.
 type ExecRunner func(binaryPath string, argv []string, env []string) error
 
+// LookPathFunc describes the signature of a function resolving an executable in PATH.
+type LookPathFunc func(file string) (string, error)
+
 // SyscallExecRunner implements real process replacement using syscall.Exec.
 func SyscallExecRunner(binaryPath string, argv []string, env []string) error {
 	return syscall.Exec(binaryPath, argv, env)
@@ -17,7 +20,8 @@ func SyscallExecRunner(binaryPath string, argv []string, env []string) error {
 
 // Executor handles launching CLI processes with injected argv.
 type Executor struct {
-	runner ExecRunner
+	runner   ExecRunner
+	lookPath LookPathFunc
 }
 
 // New creates an Executor with the provided ExecRunner.
@@ -25,12 +29,26 @@ func New(runner ExecRunner) *Executor {
 	if runner == nil {
 		runner = SyscallExecRunner
 	}
-	return &Executor{runner: runner}
+	return &Executor{
+		runner:   runner,
+		lookPath: exec.LookPath,
+	}
+}
+
+// SetLookPath injects a custom binary lookup function (useful for tests and mocks).
+func (e *Executor) SetLookPath(lp LookPathFunc) {
+	if lp != nil {
+		e.lookPath = lp
+	}
 }
 
 // Execute looks up the binary, sets working directory, and replaces the current process.
 func (e *Executor) Execute(binaryName string, args []string, cwd string) error {
-	binaryPath, err := exec.LookPath(binaryName)
+	lp := e.lookPath
+	if lp == nil {
+		lp = exec.LookPath
+	}
+	binaryPath, err := lp(binaryName)
 	if err != nil {
 		return fmt.Errorf("CLI binary %q not found in PATH: %w", binaryName, err)
 	}

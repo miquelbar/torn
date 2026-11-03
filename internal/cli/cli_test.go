@@ -211,6 +211,9 @@ func TestCLIRelayDispatchWithMockExecutor(t *testing.T) {
 	}
 
 	app.Executor = executor.New(mockRunner)
+	app.Executor.SetLookPath(func(file string) (string, error) {
+		return "/mock/bin/" + file, nil
+	})
 
 	err = app.RunRelay("claude", struct {
 		DropLastNTurns int

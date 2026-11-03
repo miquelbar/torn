@@ -49,3 +49,23 @@ func TestExecutorBinaryNotFound(t *testing.T) {
 		t.Fatal("expected error for non-existent binary, got nil")
 	}
 }
+
+func TestExecutorCustomLookPath(t *testing.T) {
+	var capturedPath string
+	execInstance := New(func(binaryPath string, argv []string, env []string) error {
+		capturedPath = binaryPath
+		return nil
+	})
+
+	execInstance.SetLookPath(func(file string) (string, error) {
+		return "/custom/bin/" + file, nil
+	})
+
+	if err := execInstance.Execute("fake-cli", []string{"arg1"}, ""); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if capturedPath != "/custom/bin/fake-cli" {
+		t.Errorf("expected captured path /custom/bin/fake-cli, got %q", capturedPath)
+	}
+}
