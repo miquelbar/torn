@@ -16,7 +16,7 @@ go build -o ~/.local/bin/torn ./cmd/torn
 
 * **`torn` / `torn <cli>`:** Failover or voluntary relay to the next available or specified AI CLI, preserving context, git HEAD state, and pruning stuck loops via `--drop N`.
 * **`torn prep`:** Copies a clean closing handoff prompt to your clipboard before hitting your context window limit (85-90%).
-* **`torn stats`:** Global terminal dashboard with live status badges (`🟢 READY`, `🟡 ACTIVE`, `🔴 COOLDOWN`), exact reset timers, token counters, and per-model performance breakdown.
+* **`torn stats` / `torn stats --refresh`:** Global terminal dashboard with live status badges (`🟢 READY`, `🟡 ACTIVE`, `🔴 COOLDOWN`), exact reset timers, token counters, and per-model performance breakdown (fast cached view, `--refresh` forces live rescan with braille spinner).
 * **`torn find <text>`:** Cross-session unified search across all local CLI histories.
 * **`torn resume [cli]`:** Resumes yesterday's active session in your preferred agent.
 

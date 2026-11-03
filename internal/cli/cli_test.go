@@ -64,12 +64,31 @@ func TestCLIStatsCommand(t *testing.T) {
 		t.Fatalf("failed to create app: %v", err)
 	}
 
+	// 1. Initial run: populates cache
 	if err := app.Run([]string{"stats"}); err != nil {
 		t.Fatalf("stats failed: %v", err)
 	}
 
 	if !strings.Contains(out.String(), "TORN HYPERVISOR STATS") {
 		t.Errorf("expected stats table header, got: %s", out.String())
+	}
+
+	// 2. Second run: served from cache
+	out.Reset()
+	if err := app.Run([]string{"stats"}); err != nil {
+		t.Fatalf("cached stats failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "TORN HYPERVISOR STATS") {
+		t.Errorf("expected cached stats table header, got: %s", out.String())
+	}
+
+	// 3. Forced refresh run
+	out.Reset()
+	if err := app.Run([]string{"stats", "--refresh"}); err != nil {
+		t.Fatalf("forced refresh stats failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "TORN HYPERVISOR STATS") {
+		t.Errorf("expected refreshed stats table header, got: %s", out.String())
 	}
 }
 

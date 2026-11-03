@@ -60,6 +60,11 @@ func New(baseDir string) (*Store, error) {
 	}, nil
 }
 
+// BaseDir returns the root base directory of the store.
+func (s *Store) BaseDir() string {
+	return s.baseDir
+}
+
 // ProjectDir returns the isolated storage path for a given project info.
 func (s *Store) ProjectDir(info *project.Info) string {
 	return filepath.Join(s.baseDir, info.Hash)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"torn/internal/search"
 	"torn/internal/stats"
 	"torn/internal/storage"
+	"torn/internal/ui"
 )
 
 // App encapsulates all dependencies required to execute torn CLI commands.
@@ -86,7 +88,11 @@ func (a *App) Run(args []string) error {
 	case "prep":
 		return a.RunPrep()
 	case "stats":
-		return a.RunStats()
+		refresh := false
+		if len(args) > 1 && (args[1] == "--refresh" || args[1] == "-r" || args[1] == "-f") {
+			refresh = true
+		}
+		return a.RunStats(refresh)
 	case "find":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: torn find <search-text>")
@@ -310,7 +316,9 @@ Please prepare a clean handoff summary including:
 }
 
 // RunStats displays the unified status and quota dashboard.
-func (a *App) RunStats() error {
+func (a *App) RunStats(refresh ...bool) error {
+	forceRefresh := len(refresh) > 0 && refresh[0]
+
 	proj, err := project.Detect(a.Cwd)
 	if err != nil {
 		return fmt.Errorf("detecting project: %w", err)
@@ -321,8 +329,23 @@ func (a *App) RunStats() error {
 		return fmt.Errorf("loading state: %w", err)
 	}
 
-	// Auto-detect dynamic cooldowns from latest session logs
 	now := time.Now()
+	cacheDir := filepath.Join(filepath.Dir(a.Store.BaseDir()), "cache")
+
+	// 1. Try cache if refresh is not forced (TTL: 60 seconds)
+	if !forceRefresh {
+		if cached, ok := stats.LoadCache(cacheDir, 60*time.Second); ok {
+			fmt.Fprint(a.Out, stats.RenderDashboard(cached))
+			return nil
+		}
+	}
+
+	// 2. Start braille spinner on a.ErrOut while scanning
+	sp := ui.NewSpinner(a.ErrOut, "Collecting telemetry across local providers")
+	sp.Start()
+	defer sp.Stop()
+
+	// Auto-detect dynamic cooldowns from latest session logs
 	stateChanged := false
 	for _, p := range a.Registry.All() {
 		sess, err := p.DetectLatestSession(proj.Path)
@@ -339,6 +362,12 @@ func (a *App) RunStats() error {
 
 	collector := stats.NewCollector(a.Registry, a.Cooldown)
 	metrics := collector.Collect(state, now)
+
+	// Save fresh metrics to cache for subsequent fast views
+	_ = stats.SaveCache(cacheDir, metrics)
+
+	// Stop spinner and clean line before rendering
+	sp.Stop()
 
 	fmt.Fprint(a.Out, stats.RenderDashboard(metrics))
 	return nil
