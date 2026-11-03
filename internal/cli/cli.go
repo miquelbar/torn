@@ -93,6 +93,10 @@ func (a *App) Run(args []string) error {
 		refresh := fs.Bool("refresh", false, "Force refresh telemetry instead of using cache")
 		fs.BoolVar(refresh, "r", false, "Alias for --refresh")
 		fs.BoolVar(refresh, "f", false, "Alias for --refresh")
+		global := fs.Bool("global", false, "Display global account-wide telemetry across all projects")
+		fs.BoolVar(global, "g", false, "Alias for --global")
+		projectFlag := fs.Bool("project", false, "Force project-scoped telemetry for current directory")
+		fs.BoolVar(projectFlag, "p", false, "Alias for --project")
 		format := fs.String("format", "table", "Output format: table, markdown, csv, json")
 		fs.StringVar(format, "o", "table", "Alias for --format")
 
@@ -100,15 +104,21 @@ func (a *App) Run(args []string) error {
 			return err
 		}
 
-		if *format == "table" && len(fs.Args()) > 0 {
-			switch strings.ToLower(fs.Args()[0]) {
+		for _, pos := range fs.Args() {
+			switch strings.ToLower(pos) {
+			case "global", "g":
+				*global = true
+			case "project", "p":
+				*projectFlag = true
 			case "markdown", "md", "csv", "json", "table":
-				*format = fs.Args()[0]
+				*format = pos
 			}
 		}
 
 		return a.RunStatsWithOptions(StatsOptions{
 			Refresh: *refresh,
+			Global:  *global,
+			Project: *projectFlag,
 			Format:  *format,
 		})
 	case "find":
@@ -336,6 +346,8 @@ Please prepare a clean handoff summary including:
 // StatsOptions configures the execution of RunStatsWithOptions.
 type StatsOptions struct {
 	Refresh bool
+	Global  bool
+	Project bool
 	Format  string
 }
 
@@ -367,15 +379,63 @@ func (a *App) RunStatsWithOptions(opts StatsOptions) error {
 	now := time.Now()
 	cacheDir := filepath.Join(filepath.Dir(a.Store.BaseDir()), "cache")
 
+	projName := filepath.Base(proj.Path)
+	projKey := "proj_" + proj.Hash
+
+	hasAIActivity := func(items []stats.ProviderStats) bool {
+		for _, ps := range items {
+			if ps.SessionsCount > 0 || ps.TotalTokens > 0 {
+				return true
+			}
+		}
+		return false
+	}
+
+	requestedScope := "auto"
+	if opts.Global {
+		requestedScope = "global"
+	} else if opts.Project {
+		requestedScope = "project"
+	}
+
 	// 1. Try cache if refresh is not forced (TTL: 60 seconds)
 	if !opts.Refresh {
-		if cached, ok := stats.LoadCache(cacheDir, 60*time.Second); ok {
-			output, err := stats.Render(cached, opts.Format)
-			if err != nil {
-				return err
+		if requestedScope == "global" {
+			if cached, ok := stats.LoadCacheKey(cacheDir, "global", 60*time.Second); ok {
+				output, err := stats.Render(cached, opts.Format, stats.DashboardOptions{Scope: "global"})
+				if err != nil {
+					return err
+				}
+				fmt.Fprint(a.Out, output)
+				return nil
 			}
-			fmt.Fprint(a.Out, output)
-			return nil
+		} else if requestedScope == "project" {
+			if cached, ok := stats.LoadCacheKey(cacheDir, projKey, 60*time.Second); ok {
+				output, err := stats.Render(cached, opts.Format, stats.DashboardOptions{Scope: "project", ProjectName: projName})
+				if err != nil {
+					return err
+				}
+				fmt.Fprint(a.Out, output)
+				return nil
+			}
+		} else {
+			// Auto: check project cache first, fallback to global cache
+			if cached, ok := stats.LoadCacheKey(cacheDir, projKey, 60*time.Second); ok && hasAIActivity(cached) {
+				output, err := stats.Render(cached, opts.Format, stats.DashboardOptions{Scope: "project", ProjectName: projName})
+				if err != nil {
+					return err
+				}
+				fmt.Fprint(a.Out, output)
+				return nil
+			}
+			if cached, ok := stats.LoadCacheKey(cacheDir, "global", 60*time.Second); ok {
+				output, err := stats.Render(cached, opts.Format, stats.DashboardOptions{Scope: "global"})
+				if err != nil {
+					return err
+				}
+				fmt.Fprint(a.Out, output)
+				return nil
+			}
 		}
 	}
 
@@ -400,15 +460,38 @@ func (a *App) RunStatsWithOptions(opts StatsOptions) error {
 	}
 
 	collector := stats.NewCollector(a.Registry, a.Cooldown)
-	metrics := collector.Collect(state, now)
 
-	// Save fresh metrics to cache for subsequent fast views
-	_ = stats.SaveCache(cacheDir, metrics)
+	var metrics []stats.ProviderStats
+	var dOpts stats.DashboardOptions
+
+	if requestedScope == "global" {
+		metrics = collector.Collect(state, now)
+		_ = stats.SaveCacheKey(cacheDir, "global", metrics)
+		dOpts = stats.DashboardOptions{Scope: "global"}
+	} else if requestedScope == "project" {
+		metrics = collector.Collect(state, now, proj.Path)
+		_ = stats.SaveCacheKey(cacheDir, projKey, metrics)
+		dOpts = stats.DashboardOptions{Scope: "project", ProjectName: projName}
+	} else {
+		// Auto: collect project first; if no AI activity found, fallback to global
+		projectMetrics := collector.Collect(state, now, proj.Path)
+		if hasAIActivity(projectMetrics) {
+			metrics = projectMetrics
+			_ = stats.SaveCacheKey(cacheDir, projKey, metrics)
+			dOpts = stats.DashboardOptions{Scope: "project", ProjectName: projName}
+		} else {
+			// Fallback to global
+			globalMetrics := collector.Collect(state, now)
+			metrics = globalMetrics
+			_ = stats.SaveCacheKey(cacheDir, "global", metrics)
+			dOpts = stats.DashboardOptions{Scope: "global"}
+		}
+	}
 
 	// Stop spinner and clean line before rendering
 	sp.Stop()
 
-	output, err := stats.Render(metrics, opts.Format)
+	output, err := stats.Render(metrics, opts.Format, dOpts)
 	if err != nil {
 		return err
 	}
@@ -478,13 +561,16 @@ RELAY FLAGS:
   --dry-run, -n            Simulate detection and render handoff without executing
 
 STATS FLAGS:
+  --global, -g             Display global account-wide telemetry across all projects
+  --project, -p            Force project-scoped telemetry for current directory
   --format, -o <fmt>       Output format: table (default), markdown, csv, json
   --refresh, -r            Force refresh telemetry from disk logs instead of cache
 
 EXAMPLES:
   torn                     Automatic failover relay to next available CLI
   torn --dry-run           Preview generated handoff without executing
-  torn stats               Display clean ANSI terminal dashboard
+  torn stats               Display stats for current directory (or global if no project)
+  torn stats --global      Display global account-wide telemetry across all projects
   torn stats --format md   Export status and model metrics as Markdown tables
   torn stats --format csv  Export telemetry in RFC 4180 CSV format
   torn claude              Voluntary return to Claude

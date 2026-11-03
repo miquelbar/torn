@@ -276,9 +276,14 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 	return details, scanner.Err()
 }
 
-func (c *CodexProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
+func (c *CodexProvider) CollectUsage(now time.Time, projectDir ...string) (UsageMetrics, error) {
 	metrics := UsageMetrics{
 		ModelStats: make(map[string]ModelMetric),
+	}
+
+	var cleanTarget string
+	if len(projectDir) > 0 && projectDir[0] != "" {
+		cleanTarget = filepath.Clean(projectDir[0])
 	}
 
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -296,6 +301,13 @@ func (c *CodexProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 		}
 		if !strings.HasPrefix(d.Name(), "rollout-") {
 			return nil
+		}
+
+		if cleanTarget != "" {
+			sessionCwd, _ := c.inspectSessionMeta(path)
+			if filepath.Clean(sessionCwd) != cleanTarget {
+				return nil
+			}
 		}
 
 		metrics.TotalSessions++

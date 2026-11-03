@@ -247,10 +247,16 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 	return details, scanner.Err()
 }
 
-func (a *AgyProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
+func (a *AgyProvider) CollectUsage(now time.Time, projectDir ...string) (UsageMetrics, error) {
 	metrics := UsageMetrics{
 		ModelStats: make(map[string]ModelMetric),
 	}
+
+	var cleanTarget string
+	if len(projectDir) > 0 && projectDir[0] != "" {
+		cleanTarget = filepath.Clean(projectDir[0])
+	}
+
 	historyPath := filepath.Join(a.baseDir, "history.jsonl")
 
 	f, err := os.Open(historyPath)
@@ -274,16 +280,41 @@ func (a *AgyProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 	for scanner.Scan() {
 		var item struct {
 			ConversationID string `json:"conversationId"`
+			SessionID      string `json:"session_id"`
+			Workspace      string `json:"workspace"`
+			Cwd            string `json:"cwd"`
+			Project        string `json:"project"`
 			Timestamp      int64  `json:"timestamp"`
 		}
-		if err := json.Unmarshal(scanner.Bytes(), &item); err == nil && item.ConversationID != "" {
-			if seenConvs[item.ConversationID] {
+		if err := json.Unmarshal(scanner.Bytes(), &item); err == nil {
+			convID := item.ConversationID
+			if convID == "" {
+				convID = item.SessionID
+			}
+			if convID == "" {
 				continue
 			}
-			seenConvs[item.ConversationID] = true
+
+			if cleanTarget != "" {
+				ws := item.Workspace
+				if ws == "" {
+					ws = item.Cwd
+				}
+				if ws == "" {
+					ws = item.Project
+				}
+				if filepath.Clean(ws) != cleanTarget {
+					continue
+				}
+			}
+
+			if seenConvs[convID] {
+				continue
+			}
+			seenConvs[convID] = true
 			metrics.TotalSessions++
 
-			transcriptPath := filepath.Join(a.baseDir, "brain", item.ConversationID, ".system_generated", "logs", "transcript.jsonl")
+			transcriptPath := filepath.Join(a.baseDir, "brain", convID, ".system_generated", "logs", "transcript.jsonl")
 			res := a.scanTranscriptTokens(transcriptPath, startOfDay, startOfWeek)
 			metrics.TotalTokens += res.totalTokens
 			metrics.TokensThisWeek += res.tokensThisWeek

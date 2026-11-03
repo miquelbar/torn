@@ -127,7 +127,32 @@ func TestCLIStatsCommand(t *testing.T) {
 		t.Errorf("expected markdown from positional argument, got:\n%s", out.String())
 	}
 
-	// 8. Unsupported format error
+	// 8. Explicit global and project scopes
+	out.Reset()
+	if err := app.Run([]string{"stats", "--global"}); err != nil {
+		t.Fatalf("stats --global failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "TORN HYPERVISOR STATS (GLOBAL)") {
+		t.Errorf("expected global title, got:\n%s", out.String())
+	}
+
+	out.Reset()
+	if err := app.Run([]string{"stats", "-g"}); err != nil {
+		t.Fatalf("stats -g failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "TORN HYPERVISOR STATS (GLOBAL)") {
+		t.Errorf("expected global title for -g, got:\n%s", out.String())
+	}
+
+	out.Reset()
+	if err := app.Run([]string{"stats", "--project"}); err != nil {
+		t.Fatalf("stats --project failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "TORN PROJECT STATS") {
+		t.Errorf("expected project title for --project, got:\n%s", out.String())
+	}
+
+	// 9. Unsupported format error
 	if err := app.Run([]string{"stats", "--format", "invalid"}); err == nil {
 		t.Errorf("expected error for unsupported format 'invalid', got nil")
 	}

@@ -40,12 +40,12 @@ func sortedModelEntries(statsList []ProviderStats) []modelExportEntry {
 }
 
 // Render formats stats according to format: table, markdown/md, csv, json.
-func Render(statsList []ProviderStats, format string) (string, error) {
+func Render(statsList []ProviderStats, format string, opts ...DashboardOptions) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "", "table", "ansi", "text":
-		return RenderDashboard(statsList), nil
+		return RenderDashboard(statsList, opts...), nil
 	case "markdown", "md":
-		return RenderMarkdown(statsList), nil
+		return RenderMarkdown(statsList, opts...), nil
 	case "csv":
 		return RenderCSV(statsList)
 	case "json":
@@ -56,10 +56,19 @@ func Render(statsList []ProviderStats, format string) (string, error) {
 }
 
 // RenderMarkdown produces clean GitHub Flavored Markdown tables.
-func RenderMarkdown(statsList []ProviderStats) string {
+func RenderMarkdown(statsList []ProviderStats, opts ...DashboardOptions) string {
 	var sb strings.Builder
 
-	sb.WriteString("# Torn Hypervisor Stats\n\n")
+	title := "Torn Hypervisor Stats (Global)"
+	if len(opts) > 0 && opts[0].Scope == "project" {
+		projName := opts[0].ProjectName
+		if projName == "" {
+			projName = "Project"
+		}
+		title = fmt.Sprintf("Torn Project Stats (%s)", projName)
+	}
+
+	sb.WriteString("# " + title + "\n\n")
 	sb.WriteString("| Provider | Status | Cooldown | Sessions | Model | Today | Total | Speed |\n")
 	sb.WriteString("| :--- | :--- | :--- | ---: | :--- | ---: | ---: | ---: |\n")
 

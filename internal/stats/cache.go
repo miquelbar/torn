@@ -15,7 +15,16 @@ type StatsCache struct {
 
 // LoadCache returns cached stats if present and younger than maxAge.
 func LoadCache(cacheDir string, maxAge time.Duration) ([]ProviderStats, bool) {
-	cachePath := filepath.Join(cacheDir, "stats_cache.json")
+	return LoadCacheKey(cacheDir, "", maxAge)
+}
+
+// LoadCacheKey returns cached stats for a given key if present and younger than maxAge.
+func LoadCacheKey(cacheDir string, key string, maxAge time.Duration) ([]ProviderStats, bool) {
+	filename := "stats_cache.json"
+	if key != "" {
+		filename = "stats_cache_" + key + ".json"
+	}
+	cachePath := filepath.Join(cacheDir, filename)
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		return nil, false
@@ -35,6 +44,11 @@ func LoadCache(cacheDir string, maxAge time.Duration) ([]ProviderStats, bool) {
 
 // SaveCache writes stats to cacheDir atomically.
 func SaveCache(cacheDir string, stats []ProviderStats) error {
+	return SaveCacheKey(cacheDir, "", stats)
+}
+
+// SaveCacheKey writes stats to cacheDir under a specific key atomically.
+func SaveCacheKey(cacheDir string, key string, stats []ProviderStats) error {
 	if err := os.MkdirAll(cacheDir, 0700); err != nil {
 		return err
 	}
@@ -49,7 +63,11 @@ func SaveCache(cacheDir string, stats []ProviderStats) error {
 		return err
 	}
 
-	cachePath := filepath.Join(cacheDir, "stats_cache.json")
+	filename := "stats_cache.json"
+	if key != "" {
+		filename = "stats_cache_" + key + ".json"
+	}
+	cachePath := filepath.Join(cacheDir, filename)
 	tmpFile, err := os.CreateTemp(cacheDir, "stats_cache.*.tmp")
 	if err != nil {
 		return err

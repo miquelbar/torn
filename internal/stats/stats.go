@@ -43,8 +43,15 @@ func NewCollector(reg *provider.Registry, cd *cooldown.Manager) *Collector {
 	}
 }
 
+// DashboardOptions configures the title and scope for rendering dashboards.
+type DashboardOptions struct {
+	Scope       string // "project" or "global"
+	ProjectName string // e.g. "torn"
+}
+
 // Collect returns status and real usage metrics for all registered providers concurrently.
-func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats {
+// If projectPath is provided, metrics are scoped strictly to that project directory.
+func (c *Collector) Collect(state *storage.State, now time.Time, projectPath ...string) []ProviderStats {
 	all := c.registry.All()
 	results := make([]ProviderStats, len(all))
 	var wg sync.WaitGroup
@@ -55,7 +62,7 @@ func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats
 			defer wg.Done()
 
 			status, remaining := c.cooldown.GetStatus(prov.Name(), state, now)
-			usage, _ := prov.CollectUsage(now)
+			usage, _ := prov.CollectUsage(now, projectPath...)
 
 			burnRate := 0.0
 			if usage.TokensToday > 0 {
@@ -88,12 +95,21 @@ func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats
 }
 
 // RenderDashboard prints an ANSI formatted dashboard of provider statuses and model breakdown.
-func RenderDashboard(statsList []ProviderStats) string {
+func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string {
 	var sb strings.Builder
+
+	title := "TORN HYPERVISOR STATS (GLOBAL)"
+	if len(opts) > 0 && opts[0].Scope == "project" {
+		projName := opts[0].ProjectName
+		if projName == "" {
+			projName = "CURRENT PROJECT"
+		}
+		title = fmt.Sprintf("TORN PROJECT STATS (%s)", projName)
+	}
 
 	divider := "\033[90m" + strings.Repeat("─", 108) + "\033[0m\n"
 
-	sb.WriteString("\n\033[1mTORN HYPERVISOR STATS\033[0m\n")
+	sb.WriteString("\n\033[1m" + title + "\033[0m\n")
 	sb.WriteString(divider)
 	sb.WriteString(fmt.Sprintf("\033[90m%-10s  %-12s  %9s  %9s  %-24s  %10s  %10s  %10s\033[0m\n",
 		"PROVIDER", "STATUS", "COOLDOWN", "SESSIONS", "MODEL", "TODAY", "TOTAL", "SPEED"))

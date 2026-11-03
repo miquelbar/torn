@@ -229,15 +229,15 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 	return details, scanner.Err()
 }
 
-func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
+func (c *ClaudeProvider) CollectUsage(now time.Time, projectDir ...string) (UsageMetrics, error) {
 	metrics := UsageMetrics{
 		ModelStats: make(map[string]ModelMetric),
 	}
 	projectsDir := filepath.Join(c.baseDir, "projects")
 
-	entries, err := os.ReadDir(projectsDir)
-	if err != nil {
-		return metrics, nil
+	var targetSlug string
+	if len(projectDir) > 0 && projectDir[0] != "" {
+		targetSlug = c.PathToSlug(projectDir[0])
 	}
 
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -248,14 +248,10 @@ func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 	var latestModelTime time.Time
 	uniqueModelsMap := make(map[string]bool)
 
-	for _, pEntry := range entries {
-		if !pEntry.IsDir() {
-			continue
-		}
-		pDir := filepath.Join(projectsDir, pEntry.Name())
+	processDir := func(pDir string) {
 		files, err := os.ReadDir(pDir)
 		if err != nil {
-			continue
+			return
 		}
 
 		for _, f := range files {
@@ -292,6 +288,22 @@ func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 			if res.lastModelTime.After(latestModelTime) && res.lastModel != "" {
 				metrics.LastModel = res.lastModel
 				latestModelTime = res.lastModelTime
+			}
+		}
+	}
+
+	if targetSlug != "" {
+		pDir := filepath.Join(projectsDir, targetSlug)
+		if info, err := os.Stat(pDir); err == nil && info.IsDir() {
+			processDir(pDir)
+		}
+	} else {
+		entries, err := os.ReadDir(projectsDir)
+		if err == nil {
+			for _, pEntry := range entries {
+				if pEntry.IsDir() {
+					processDir(filepath.Join(projectsDir, pEntry.Name()))
+				}
 			}
 		}
 	}

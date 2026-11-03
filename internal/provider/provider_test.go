@@ -423,4 +423,21 @@ func TestMultiModelSessionSwitching(t *testing.T) {
 	if usage.TokensPerSec <= 0 {
 		t.Errorf("expected positive TokensPerSec, got %f", usage.TokensPerSec)
 	}
+
+	// Test project scoped filtering
+	projUsage, err := p.CollectUsage(now, cwd)
+	if err != nil {
+		t.Fatalf("CollectUsage with matching project failed: %v", err)
+	}
+	if projUsage.TotalSessions != 1 {
+		t.Errorf("expected 1 session for %s, got %d", cwd, projUsage.TotalSessions)
+	}
+
+	diffUsage, err := p.CollectUsage(now, "/Users/test/Projects/other")
+	if err != nil {
+		t.Fatalf("CollectUsage with other project failed: %v", err)
+	}
+	if diffUsage.TotalSessions != 0 {
+		t.Errorf("expected 0 sessions for other project, got %d", diffUsage.TotalSessions)
+	}
 }

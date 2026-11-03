@@ -68,5 +68,5 @@ type Provider interface {
 	ParseSession(sessionPath string) (*SessionDetails, error)
 	FormatExecArgs(prompt string) []string
 	DefaultCooldown() time.Duration
-	CollectUsage(now time.Time) (UsageMetrics, error)
+	CollectUsage(now time.Time, projectDir ...string) (UsageMetrics, error)
 }

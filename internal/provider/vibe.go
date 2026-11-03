@@ -226,10 +226,31 @@ func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error)
 	return details, scanner.Err()
 }
 
-func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
+func (v *VibeProvider) CollectUsage(now time.Time, projectDir ...string) (UsageMetrics, error) {
 	metrics := UsageMetrics{
 		ModelStats: make(map[string]ModelMetric),
 	}
+
+	var cleanTarget string
+	if len(projectDir) > 0 && projectDir[0] != "" {
+		cleanTarget = filepath.Clean(projectDir[0])
+	}
+
+	allowedSessions := make(map[string]bool)
+	if cleanTarget != "" {
+		indexPath := filepath.Join(v.baseDir, "logs", "session", ".session_index.json")
+		if data, err := os.ReadFile(indexPath); err == nil {
+			var index map[string]vibeIndexEntry
+			if err := json.Unmarshal(data, &index); err == nil {
+				for key, entry := range index {
+					if filepath.Clean(entry.CWD) == cleanTarget {
+						allowedSessions[key] = true
+					}
+				}
+			}
+		}
+	}
+
 	sessionDir := filepath.Join(v.baseDir, "logs", "session")
 	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
@@ -246,6 +267,9 @@ func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 
 	for _, entry := range entries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		if cleanTarget != "" && !allowedSessions[entry.Name()] {
 			continue
 		}
 		metaPath := filepath.Join(sessionDir, entry.Name(), "meta.json")
