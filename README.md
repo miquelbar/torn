@@ -341,4 +341,4 @@ torn resume claude
 
 ## License
 
-[MIT](LICENSE) © Miquel Barba
+This project is licensed under the [MIT License](LICENSE).
