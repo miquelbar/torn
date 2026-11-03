@@ -88,11 +88,29 @@ func (a *App) Run(args []string) error {
 	case "prep":
 		return a.RunPrep()
 	case "stats":
-		refresh := false
-		if len(args) > 1 && (args[1] == "--refresh" || args[1] == "-r" || args[1] == "-f") {
-			refresh = true
+		fs := flag.NewFlagSet("stats", flag.ContinueOnError)
+		fs.SetOutput(a.ErrOut)
+		refresh := fs.Bool("refresh", false, "Force refresh telemetry instead of using cache")
+		fs.BoolVar(refresh, "r", false, "Alias for --refresh")
+		fs.BoolVar(refresh, "f", false, "Alias for --refresh")
+		format := fs.String("format", "table", "Output format: table, markdown, csv, json")
+		fs.StringVar(format, "o", "table", "Alias for --format")
+
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
 		}
-		return a.RunStats(refresh)
+
+		if *format == "table" && len(fs.Args()) > 0 {
+			switch strings.ToLower(fs.Args()[0]) {
+			case "markdown", "md", "csv", "json", "table":
+				*format = fs.Args()[0]
+			}
+		}
+
+		return a.RunStatsWithOptions(StatsOptions{
+			Refresh: *refresh,
+			Format:  *format,
+		})
 	case "find":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: torn find <search-text>")
@@ -315,9 +333,26 @@ Please prepare a clean handoff summary including:
 	return nil
 }
 
+// StatsOptions configures the execution of RunStatsWithOptions.
+type StatsOptions struct {
+	Refresh bool
+	Format  string
+}
+
 // RunStats displays the unified status and quota dashboard.
 func (a *App) RunStats(refresh ...bool) error {
 	forceRefresh := len(refresh) > 0 && refresh[0]
+	return a.RunStatsWithOptions(StatsOptions{
+		Refresh: forceRefresh,
+		Format:  "table",
+	})
+}
+
+// RunStatsWithOptions displays or exports the unified status and quota dashboard.
+func (a *App) RunStatsWithOptions(opts StatsOptions) error {
+	if opts.Format == "" {
+		opts.Format = "table"
+	}
 
 	proj, err := project.Detect(a.Cwd)
 	if err != nil {
@@ -333,9 +368,13 @@ func (a *App) RunStats(refresh ...bool) error {
 	cacheDir := filepath.Join(filepath.Dir(a.Store.BaseDir()), "cache")
 
 	// 1. Try cache if refresh is not forced (TTL: 60 seconds)
-	if !forceRefresh {
+	if !opts.Refresh {
 		if cached, ok := stats.LoadCache(cacheDir, 60*time.Second); ok {
-			fmt.Fprint(a.Out, stats.RenderDashboard(cached))
+			output, err := stats.Render(cached, opts.Format)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(a.Out, output)
 			return nil
 		}
 	}
@@ -369,7 +408,11 @@ func (a *App) RunStats(refresh ...bool) error {
 	// Stop spinner and clean line before rendering
 	sp.Stop()
 
-	fmt.Fprint(a.Out, stats.RenderDashboard(metrics))
+	output, err := stats.Render(metrics, opts.Format)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(a.Out, output)
 	return nil
 }
 
@@ -424,7 +467,7 @@ func (a *App) printHelp() {
 USAGE:
   torn [cli] [flags]       Relay to next CLI (or specified target)
   torn prep                Copy soft-landing closing prompt to clipboard
-  torn stats               Display provider status and quota telemetry
+  torn stats [flags]       Display or export provider status and quota telemetry
   torn find <query>        Search local sessions across CLIs by keyword
   torn resume [cli]        Restore latest active session into preferred agent
   torn sync                Synchronize global agent rules in $HOME
@@ -434,9 +477,16 @@ RELAY FLAGS:
   --fresh                  Clear accumulated chain and start fresh task
   --dry-run, -n            Simulate detection and render handoff without executing
 
+STATS FLAGS:
+  --format, -o <fmt>       Output format: table (default), markdown, csv, json
+  --refresh, -r            Force refresh telemetry from disk logs instead of cache
+
 EXAMPLES:
   torn                     Automatic failover relay to next available CLI
   torn --dry-run           Preview generated handoff without executing
+  torn stats               Display clean ANSI terminal dashboard
+  torn stats --format md   Export status and model metrics as Markdown tables
+  torn stats --format csv  Export telemetry in RFC 4180 CSV format
   torn claude              Voluntary return to Claude
   torn codex --drop 2      Relay to Codex dropping the last 2 turns
   torn codex --fresh       Relay to Codex with fresh context for a new feature

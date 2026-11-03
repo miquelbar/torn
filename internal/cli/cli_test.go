@@ -90,6 +90,47 @@ func TestCLIStatsCommand(t *testing.T) {
 	if !strings.Contains(out.String(), "TORN HYPERVISOR STATS") {
 		t.Errorf("expected refreshed stats table header, got: %s", out.String())
 	}
+
+	// 4. Export as Markdown
+	out.Reset()
+	if err := app.Run([]string{"stats", "--format", "markdown"}); err != nil {
+		t.Fatalf("stats markdown failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "# Torn Hypervisor Stats") || !strings.Contains(out.String(), "| Provider |") {
+		t.Errorf("expected markdown tables, got:\n%s", out.String())
+	}
+
+	// 5. Export as CSV via -o flag
+	out.Reset()
+	if err := app.Run([]string{"stats", "-o", "csv"}); err != nil {
+		t.Fatalf("stats csv failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "Provider,Status,Cooldown") {
+		t.Errorf("expected CSV headers, got:\n%s", out.String())
+	}
+
+	// 6. Export as JSON
+	out.Reset()
+	if err := app.Run([]string{"stats", "--format", "json"}); err != nil {
+		t.Fatalf("stats json failed: %v", err)
+	}
+	if !strings.Contains(out.String(), `"provider"`) && !strings.Contains(out.String(), `"name"`) {
+		t.Errorf("expected JSON structure, got:\n%s", out.String())
+	}
+
+	// 7. Positional format alias
+	out.Reset()
+	if err := app.Run([]string{"stats", "md"}); err != nil {
+		t.Fatalf("stats md positional failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "# Torn Hypervisor Stats") {
+		t.Errorf("expected markdown from positional argument, got:\n%s", out.String())
+	}
+
+	// 8. Unsupported format error
+	if err := app.Run([]string{"stats", "--format", "invalid"}); err == nil {
+		t.Errorf("expected error for unsupported format 'invalid', got nil")
+	}
 }
 
 func TestCLIDryRun(t *testing.T) {

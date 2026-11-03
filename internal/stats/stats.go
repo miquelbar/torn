@@ -253,8 +253,8 @@ func FormatCompactNumber(n int64) string {
 }
 
 func formatNumber(n int64) string {
-	if n == 0 {
-		return "--"
+	if n <= 0 {
+		return "0"
 	}
 	str := fmt.Sprintf("%d", n)
 	if len(str) <= 3 {

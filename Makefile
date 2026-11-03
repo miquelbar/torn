@@ -1,6 +1,6 @@
 # Makefile for torn
 
-.PHONY: all setup build run test test-coverage lint fmt vet clean check
+.PHONY: all setup build run stats test test-coverage lint fmt vet clean check
 
 APP_NAME := torn
 BIN_DIR := bin
@@ -33,6 +33,16 @@ build:
 
 run:
 	@go run $(CMD)
+
+FORMAT ?=
+ARGS ?=
+
+stats:
+	@if [ -n "$(FORMAT)" ]; then \
+		go run $(CMD) stats --format $(FORMAT) $(ARGS); \
+	else \
+		go run $(CMD) stats $(ARGS); \
+	fi
 
 test:
 	@echo "Running tests..."
