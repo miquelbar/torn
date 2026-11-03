@@ -269,10 +269,10 @@ func (c *CodexProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 
 		realTokens := c.scanRolloutTokens(path)
 		metrics.TotalTokens += realTokens
-		if info.ModTime().After(startOfWeek) {
+		if info.ModTime().After(startOfWeek) || info.ModTime().Equal(startOfWeek) {
 			metrics.TokensThisWeek += realTokens
 		}
-		if info.ModTime().After(startOfDay) {
+		if info.ModTime().After(startOfDay) || info.ModTime().Equal(startOfDay) {
 			metrics.TokensToday += realTokens
 		}
 		return nil

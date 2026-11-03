@@ -247,11 +247,18 @@ func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 					t = info.ModTime()
 				}
 			}
+			// If messages.jsonl or session folder was modified more recently, use latest activity time
+			msgPath := filepath.Join(sessionDir, entry.Name(), "messages.jsonl")
+			if s, err := os.Stat(msgPath); err == nil && s.ModTime().After(t) {
+				t = s.ModTime()
+			} else if info, err := entry.Info(); err == nil && info.ModTime().After(t) {
+				t = info.ModTime()
+			}
 
-			if t.After(startOfWeek) {
+			if t.After(startOfWeek) || t.Equal(startOfWeek) {
 				metrics.TokensThisWeek += tokens
 			}
-			if t.After(startOfDay) {
+			if t.After(startOfDay) || t.Equal(startOfDay) {
 				metrics.TokensToday += tokens
 			}
 		}

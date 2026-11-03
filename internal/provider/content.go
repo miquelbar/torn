@@ -3,6 +3,8 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"torn/internal/strutil"
@@ -104,16 +106,27 @@ func ParseContentBlock(raw any) ExtractedContent {
 	return res
 }
 
-func extractArgSummary(rawArgs any) string {
+func extractArgSummary(rawArgs any, workspace ...string) string {
 	if rawArgs == nil {
 		return ""
+	}
+
+	var ws string
+	if len(workspace) > 0 && workspace[0] != "" {
+		ws = workspace[0]
+	} else {
+		ws, _ = os.Getwd()
 	}
 
 	var m map[string]any
 	switch a := rawArgs.(type) {
 	case string:
 		if err := json.Unmarshal([]byte(a), &m); err != nil {
-			return strutil.Truncate(strings.TrimSpace(a), 50, "...")
+			trimmed := strings.TrimSpace(a)
+			if filepath.IsAbs(trimmed) || strings.HasPrefix(trimmed, "/") {
+				return strutil.TruncatePath(trimmed, ws, 60)
+			}
+			return strutil.Truncate(trimmed, 50, "...")
 		}
 	case map[string]any:
 		m = a
@@ -123,16 +136,27 @@ func extractArgSummary(rawArgs any) string {
 		return ""
 	}
 
-	// Prioritize common paths, targets, commands, and summaries
-	keys := []string{
+	// 1. Prioritize file path and directory parameters
+	pathKeys := []string{
 		"TargetFile", "target_file", "AbsolutePath", "absolute_path",
 		"DirectoryPath", "directory_path", "file_path", "filePath",
-		"path", "Path", "file", "File", "CommandLine", "command",
-		"cmd", "query", "Query", "pattern", "Pattern", "Url", "url",
-		"toolSummary",
+		"path", "Path", "file", "File",
+	}
+	for _, key := range pathKeys {
+		if val, ok := m[key].(string); ok {
+			cleanVal := strings.Trim(strings.TrimSpace(val), "\"'")
+			if cleanVal != "" {
+				return strutil.TruncatePath(cleanVal, ws, 60)
+			}
+		}
 	}
 
-	for _, key := range keys {
+	// 2. Commands, queries, URLs, and summaries
+	otherKeys := []string{
+		"CommandLine", "command", "cmd", "query", "Query",
+		"pattern", "Pattern", "Url", "url", "toolSummary",
+	}
+	for _, key := range otherKeys {
 		if val, ok := m[key].(string); ok && strings.TrimSpace(val) != "" {
 			return strutil.Truncate(strings.TrimSpace(val), 60, "...")
 		}

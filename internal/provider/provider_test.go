@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,9 +241,12 @@ func TestAgyToolExtractionAndMarkerCleaning(t *testing.T) {
 	workspace := "/Users/test/Projects/agy-target"
 	convID := "conv-test-tools"
 
-	// 1. Setup session directory
+	// 1. Setup session directory and history.jsonl
 	sessionDir := filepath.Join(tempDir, "conversations", convID)
 	_ = os.MkdirAll(sessionDir, 0755)
+	historyContent := fmt.Sprintf(`{"conversationId":%q,"workspace":%q,"timestamp":1793649474024}`+"\n", convID, workspace)
+	_ = os.WriteFile(filepath.Join(tempDir, "history.jsonl"), []byte(historyContent), 0644)
+
 	sessMeta := map[string]any{
 		"session_id":     convID,
 		"workspace_path": workspace,
@@ -281,7 +285,7 @@ func TestAgyToolExtractionAndMarkerCleaning(t *testing.T) {
 
 	expectedTools := []string{
 		`write_to_file("internal/auth/handler.go")`,
-		`view_file("/Users/test/Projects/agy-target/main.go")`,
+		`view_file("main.go")`,
 	}
 	if len(assistantTurn.Tools) != len(expectedTools) {
 		t.Fatalf("expected %d tools, got %d: %v", len(expectedTools), len(assistantTurn.Tools), assistantTurn.Tools)
@@ -290,6 +294,44 @@ func TestAgyToolExtractionAndMarkerCleaning(t *testing.T) {
 		if assistantTurn.Tools[i] != expected {
 			t.Errorf("tool[%d]: expected %q, got %q", i, expected, assistantTurn.Tools[i])
 		}
+	}
+}
+
+func TestAgyCollectUsagePerDayTokens(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewAgy(tempDir)
+
+	now := time.Date(2026, 11, 3, 14, 0, 0, 0, time.UTC)
+	yesterday := now.AddDate(0, 0, -1)
+
+	convID := "conv-multi-day"
+	historyContent := fmt.Sprintf(`{"conversationId":%q,"workspace":"/test/ws","timestamp":%d}`+"\n", convID, yesterday.UnixMilli())
+	_ = os.WriteFile(filepath.Join(tempDir, "history.jsonl"), []byte(historyContent), 0644)
+
+	brainLogsDir := filepath.Join(tempDir, "brain", convID, ".system_generated", "logs")
+	_ = os.MkdirAll(brainLogsDir, 0755)
+
+	transcriptContent := fmt.Sprintf(`{"step_index":0,"created_at":%q,"input_tokens":5000,"output_tokens":500}
+{"step_index":1,"created_at":%q,"input_tokens":3000,"output_tokens":200}
+`, yesterday.Format(time.RFC3339), now.Format(time.RFC3339))
+	_ = os.WriteFile(filepath.Join(brainLogsDir, "transcript.jsonl"), []byte(transcriptContent), 0644)
+
+	usage, err := p.CollectUsage(now)
+	if err != nil {
+		t.Fatalf("CollectUsage failed: %v", err)
+	}
+
+	if usage.TotalSessions != 1 {
+		t.Errorf("expected 1 session, got %d", usage.TotalSessions)
+	}
+	if usage.TotalTokens != 8700 {
+		t.Errorf("expected 8700 total tokens, got %d", usage.TotalTokens)
+	}
+	if usage.TokensThisWeek != 8700 {
+		t.Errorf("expected 8700 tokens this week, got %d", usage.TokensThisWeek)
+	}
+	if usage.TokensToday != 3200 {
+		t.Errorf("expected 3200 tokens today, got %d", usage.TokensToday)
 	}
 }
 

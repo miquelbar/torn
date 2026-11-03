@@ -140,6 +140,14 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 		Turns: make([]Turn, 0),
 	}
 
+	if details.Session.CWD == "" {
+		if ws := a.lookupConversationWorkspace(convID); ws != "" {
+			details.Session.CWD = ws
+		} else {
+			details.Session.CWD, _ = os.Getwd()
+		}
+	}
+
 	f, err := os.Open(sessionPath)
 	if err != nil {
 		return details, nil
@@ -188,7 +196,7 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 			var tools []string
 			for _, tc := range step.ToolCalls {
 				toolStr := tc.Name
-				argSummary := extractArgSummary(tc.Args)
+				argSummary := extractArgSummary(tc.Args, details.Session.CWD)
 				cleanArg := strings.Trim(strings.TrimSpace(argSummary), `"`)
 				if cleanArg != "" {
 					toolStr = fmt.Sprintf("%s(%q)", tc.Name, cleanArg)
@@ -244,35 +252,31 @@ func (a *AgyProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 			seenConvs[item.ConversationID] = true
 			metrics.TotalSessions++
 
-			updated := time.Unix(item.Timestamp/1000, 0)
-			if item.Timestamp < 10000000000 {
-				updated = time.Unix(item.Timestamp, 0)
-			}
-
 			transcriptPath := filepath.Join(a.baseDir, "brain", item.ConversationID, ".system_generated", "logs", "transcript.jsonl")
-			tokens := a.scanTranscriptTokens(transcriptPath)
-			metrics.TotalTokens += tokens
-
-			if updated.After(startOfWeek) {
-				metrics.TokensThisWeek += tokens
-			}
-			if updated.After(startOfDay) {
-				metrics.TokensToday += tokens
-			}
+			tot, wk, td := a.scanTranscriptTokens(transcriptPath, startOfDay, startOfWeek)
+			metrics.TotalTokens += tot
+			metrics.TokensThisWeek += wk
+			metrics.TokensToday += td
 		}
 	}
 
 	return metrics, nil
 }
 
-func (a *AgyProvider) scanTranscriptTokens(path string) int64 {
+func (a *AgyProvider) scanTranscriptTokens(path string, startOfDay, startOfWeek time.Time) (int64, int64, int64) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0
+		return 0, 0, 0
 	}
 	defer f.Close()
 
-	var total int64
+	stat, _ := f.Stat()
+	var fileMod time.Time
+	if stat != nil {
+		fileMod = stat.ModTime()
+	}
+
+	var total, week, today int64
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -283,15 +287,73 @@ func (a *AgyProvider) scanTranscriptTokens(path string) int64 {
 		}
 
 		var step struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			CreatedAt    string `json:"created_at"`
+			InputTokens  int    `json:"input_tokens"`
+			OutputTokens int    `json:"output_tokens"`
 		}
 		if err := json.Unmarshal(line, &step); err == nil {
-			total += int64(step.InputTokens + step.OutputTokens)
+			stepTokens := int64(step.InputTokens + step.OutputTokens)
+			total += stepTokens
+
+			stepTime := fileMod
+			if step.CreatedAt != "" {
+				if t, err := time.Parse(time.RFC3339Nano, step.CreatedAt); err == nil {
+					stepTime = t
+				} else if t, err := time.Parse(time.RFC3339, step.CreatedAt); err == nil {
+					stepTime = t
+				}
+			}
+
+			if !stepTime.IsZero() {
+				if stepTime.After(startOfWeek) || stepTime.Equal(startOfWeek) {
+					week += stepTokens
+				}
+				if stepTime.After(startOfDay) || stepTime.Equal(startOfDay) {
+					today += stepTokens
+				}
+			}
 		}
 	}
 
-	return total
+	return total, week, today
+}
+
+func (a *AgyProvider) lookupConversationWorkspace(convID string) string {
+	f, err := os.Open(filepath.Join(a.baseDir, "history.jsonl"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	cleanID := strings.Trim(strings.TrimSpace(convID), `"'`)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		var item struct {
+			ConversationID string `json:"conversationId"`
+			SessionID      string `json:"session_id"`
+			Workspace      string `json:"workspace"`
+			Cwd            string `json:"cwd"`
+			Project        string `json:"project"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &item); err == nil {
+			id := item.ConversationID
+			if id == "" {
+				id = item.SessionID
+			}
+			if strings.Trim(strings.TrimSpace(id), `"'`) == cleanID {
+				ws := item.Workspace
+				if ws == "" {
+					ws = item.Cwd
+				}
+				if ws == "" {
+					ws = item.Project
+				}
+				return strings.Trim(strings.TrimSpace(ws), `"'`)
+			}
+		}
+	}
+	return ""
 }
 
 var userRequestRegex = regexp.MustCompile(`(?s)<\/?USER_REQUEST>`)

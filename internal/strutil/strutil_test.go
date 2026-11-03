@@ -1,6 +1,7 @@
 package strutil
 
 import (
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -74,5 +75,45 @@ func TestSafeSnippet(t *testing.T) {
 	}
 	if SafeSnippet(s, 50, 60) != "" {
 		t.Errorf("expected empty string for out of bound range")
+	}
+}
+
+func TestTruncatePath(t *testing.T) {
+	ws := "/Users/test/Projects/my-app"
+
+	// 1. Path inside workspace becomes relative
+	p1 := "/Users/test/Projects/my-app/apps/api/internal/portada/worker.go"
+	res1 := TruncatePath(p1, ws, 60)
+	if res1 != "apps/api/internal/portada/worker.go" {
+		t.Errorf("expected relative path 'apps/api/internal/portada/worker.go', got %q", res1)
+	}
+
+	// 2. Relative path that exceeds maxRunes truncates directory prefix preserving filename
+	p2 := "apps/frontend/features/admin/dashboard/analytics/charts/performance/summary_view_controller.tsx"
+	res2 := TruncatePath(p2, ws, 45)
+	expectedBase := "summary_view_controller.tsx"
+	if !strings.HasSuffix(res2, expectedBase) {
+		t.Errorf("expected suffix %q, got %q", expectedBase, res2)
+	}
+	if !strings.HasPrefix(res2, ".../") {
+		t.Errorf("expected prefix '.../', got %q", res2)
+	}
+
+	// 3. Absolute path outside workspace truncates prefix preserving filename
+	p3 := "/Users/test/.gemini/antigravity-cli/brain/eb96e783-3cb9-4048-9125-ab28695a7575/task.log"
+	res3 := TruncatePath(p3, ws, 35)
+	if !strings.HasSuffix(res3, "task.log") {
+		t.Errorf("expected suffix 'task.log', got %q", res3)
+	}
+	if !strings.HasPrefix(res3, ".../") {
+		t.Errorf("expected prefix '.../', got %q", res3)
+	}
+
+	// 4. Empty and edge cases
+	if TruncatePath("", ws, 20) != "" {
+		t.Errorf("expected empty string for empty path")
+	}
+	if TruncatePath("/a/b/c.go", "", 0) != "c.go" {
+		t.Errorf("expected 'c.go' when maxRunes <= 0")
 	}
 }

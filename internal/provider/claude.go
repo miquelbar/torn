@@ -244,29 +244,28 @@ func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 			}
 
 			filePath := filepath.Join(pDir, f.Name())
-			fileTokens := c.scanFileTokens(filePath)
-			metrics.TotalTokens += fileTokens
-
-			if fInfo.ModTime().After(startOfWeek) {
-				metrics.TokensThisWeek += fileTokens
-			}
-			if fInfo.ModTime().After(startOfDay) {
-				metrics.TokensToday += fileTokens
-			}
+			tot, wk, td := c.scanFileTokens(filePath, fInfo.ModTime(), startOfDay, startOfWeek)
+			metrics.TotalTokens += tot
+			metrics.TokensThisWeek += wk
+			metrics.TokensToday += td
 		}
 	}
 
 	return metrics, nil
 }
 
-func (c *ClaudeProvider) scanFileTokens(path string) int64 {
+func (c *ClaudeProvider) scanFileTokens(path string, fileMod time.Time, startOfDay, startOfWeek time.Time) (int64, int64, int64) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0
+		return 0, 0, 0
 	}
 	defer f.Close()
 
-	seenMsgs := make(map[string]int64)
+	type msgRecord struct {
+		tokens int64
+		time   time.Time
+	}
+	seenMsgs := make(map[string]msgRecord)
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
@@ -277,7 +276,8 @@ func (c *ClaudeProvider) scanFileTokens(path string) int64 {
 		}
 
 		var raw struct {
-			Message struct {
+			Timestamp string `json:"timestamp"`
+			Message   struct {
 				ID    string         `json:"id"`
 				Usage map[string]any `json:"usage"`
 			} `json:"message"`
@@ -287,19 +287,35 @@ func (c *ClaudeProvider) scanFileTokens(path string) int64 {
 			inTok := toInt64(u["input_tokens"]) + toInt64(u["cache_creation_input_tokens"])
 			outTok := toInt64(u["output_tokens"])
 			msgTokens := inTok + outTok
-			if raw.Message.ID != "" {
-				seenMsgs[raw.Message.ID] = msgTokens
-			} else {
-				seenMsgs[fmt.Sprintf("anon_%d", len(seenMsgs))] = msgTokens
+
+			msgTime := fileMod
+			if raw.Timestamp != "" {
+				if t, err := time.Parse(time.RFC3339Nano, raw.Timestamp); err == nil {
+					msgTime = t
+				} else if t, err := time.Parse(time.RFC3339, raw.Timestamp); err == nil {
+					msgTime = t
+				}
 			}
+
+			id := raw.Message.ID
+			if id == "" {
+				id = fmt.Sprintf("anon_%d", len(seenMsgs))
+			}
+			seenMsgs[id] = msgRecord{tokens: msgTokens, time: msgTime}
 		}
 	}
 
-	var total int64
-	for _, tok := range seenMsgs {
-		total += tok
+	var total, week, today int64
+	for _, rec := range seenMsgs {
+		total += rec.tokens
+		if rec.time.After(startOfWeek) || rec.time.Equal(startOfWeek) {
+			week += rec.tokens
+		}
+		if rec.time.After(startOfDay) || rec.time.Equal(startOfDay) {
+			today += rec.tokens
+		}
 	}
-	return total
+	return total, week, today
 }
 
 var resetRegex = regexp.MustCompile(`(?i)resets\s+(\d{1,2}(?::\d{2})?[ap]m)(?:\s*\(([^)]+)\))?`)

@@ -1,6 +1,7 @@
 package strutil
 
 import (
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
@@ -59,4 +60,64 @@ func SafeSnippet(s string, startByte int, endByte int) string {
 	}
 
 	return s[startByte:endByte]
+}
+
+// TruncatePath formats a file path for high-density CLI display:
+//  1. If path is inside workspace, it converts path to a relative path.
+//  2. If the resulting path exceeds maxRunes, it truncates the directory prefix
+//     while preserving filepath.Base(path) intact at the end (e.g. ".../internal/portada/worker.go").
+func TruncatePath(path string, workspace string, maxRunes int) string {
+	cleanVal := strings.Trim(strings.TrimSpace(path), "\"'")
+	if cleanVal == "" {
+		return ""
+	}
+	cleanPath := filepath.Clean(cleanVal)
+
+	// 1. If workspace is provided, make relative if path is within workspace
+	if workspace != "" {
+		cleanWS := filepath.Clean(workspace)
+		if rel, err := filepath.Rel(cleanWS, cleanPath); err == nil && !strings.HasPrefix(rel, "..") {
+			cleanPath = rel
+		}
+	}
+
+	if maxRunes <= 0 {
+		return filepath.Base(cleanPath)
+	}
+
+	if utf8.RuneCountInString(cleanPath) <= maxRunes {
+		return cleanPath
+	}
+
+	base := filepath.Base(cleanPath)
+	baseRunes := utf8.RuneCountInString(base)
+
+	// If filename alone exceeds or equals maxRunes, truncate filename preserving extension
+	if baseRunes >= maxRunes {
+		ext := filepath.Ext(base)
+		if len(ext) > 0 && len(ext) < maxRunes-4 {
+			rem := maxRunes - len(ext) - 3
+			return Truncate(base[:len(base)-len(ext)], rem, "...") + ext
+		}
+		return Truncate(base, maxRunes, "...")
+	}
+
+	// We want ".../<tail-of-dir>/<base>"
+	// Prefix ellipsis is ".../" (4 runes)
+	remDirRunes := maxRunes - baseRunes - 4
+	if remDirRunes <= 0 {
+		return ".../" + base
+	}
+
+	dir := filepath.Dir(cleanPath)
+	dirRunes := []rune(dir)
+	if len(dirRunes) > remDirRunes {
+		tail := string(dirRunes[len(dirRunes)-remDirRunes:])
+		if slashIdx := strings.Index(tail, string(filepath.Separator)); slashIdx != -1 && slashIdx < len(tail)-1 {
+			tail = tail[slashIdx+1:]
+		}
+		return ".../" + filepath.Join(tail, base)
+	}
+
+	return cleanPath
 }
