@@ -32,6 +32,7 @@ func DefaultRegistry() *Registry {
 		NewCodex(""),
 		NewVibe(""),
 		NewAgy(""),
+		NewOpenCode(""),
 	)
 }
 
