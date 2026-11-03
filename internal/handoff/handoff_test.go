@@ -219,3 +219,23 @@ func TestBuilderPseudoUserFilteringAndQuotaLimitFiltering(t *testing.T) {
 		t.Errorf("expected substantial reasoning to have generous limit")
 	}
 }
+
+func TestBuilderSourceModelsHeader(t *testing.T) {
+	b := NewBuilder()
+	proj := &project.Info{Path: "/app"}
+
+	details := &provider.SessionDetails{
+		ModelsUsed: []string{"claude-opus-4-6", "claude-sonnet-4-5"},
+		Turns: []provider.Turn{
+			{Role: "user", Text: "hello"},
+			{Role: "assistant", Text: "world"},
+		},
+	}
+
+	prompt := b.Build(proj, "claude", "codex", details, Options{})
+
+	expectedHeader := "**Source Models:** claude-opus-4-6 ➔ claude-sonnet-4-5\n**Relay:** `claude` ➔ `codex`"
+	if !strings.Contains(prompt, expectedHeader) {
+		t.Errorf("expected header %q in prompt, got:\n%s", expectedHeader, prompt)
+	}
+}

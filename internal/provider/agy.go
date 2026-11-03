@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -157,10 +157,30 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
+	activeModel := "gemini-3.8-flash"
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
+		}
+
+		if match := agyModelChangeRegex.FindSubmatch(line); len(match) > 1 {
+			if norm := FormatModelName(string(match[1])); norm != "" {
+				activeModel = norm
+			}
+		}
+
+		recordModel := func() {
+			if activeModel == "" {
+				return
+			}
+			for _, m := range details.ModelsUsed {
+				if m == activeModel {
+					return
+				}
+			}
+			details.ModelsUsed = append(details.ModelsUsed, activeModel)
 		}
 
 		var step struct {
@@ -184,15 +204,18 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 		details.TotalTokens += int64(turnTokens)
 
 		if step.Type == "USER_INPUT" && step.Content != "" {
+			recordModel()
 			userText := cleanUserPrompt(step.Content)
 			details.Turns = append(details.Turns, Turn{
 				Role:      "user",
 				Text:      userText,
 				Timestamp: stat.ModTime(),
 				Tokens:    turnTokens,
+				Model:     activeModel,
 			})
 			details.LastUserMessage = userText
 		} else if step.Type == "PLANNER_RESPONSE" {
+			recordModel()
 			var tools []string
 			for _, tc := range step.ToolCalls {
 				toolStr := tc.Name
@@ -211,6 +234,7 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 					Text:      text,
 					Tools:     tools,
 					Tokens:    turnTokens,
+					Model:     activeModel,
 					Timestamp: stat.ModTime(),
 				})
 				if text != "" {
@@ -224,7 +248,9 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 }
 
 func (a *AgyProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
-	var metrics UsageMetrics
+	metrics := UsageMetrics{
+		ModelStats: make(map[string]ModelMetric),
+	}
 	historyPath := filepath.Join(a.baseDir, "history.jsonl")
 
 	f, err := os.Open(historyPath)
@@ -238,6 +264,11 @@ func (a *AgyProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	startOfWeek := startOfDay.AddDate(0, 0, -7)
+
+	var totalValidOutTok int64
+	var totalValidDuration float64
+	var latestModelTime time.Time
+	uniqueModelsMap := make(map[string]bool)
 
 	seenConvs := make(map[string]bool)
 	for scanner.Scan() {
@@ -253,20 +284,71 @@ func (a *AgyProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 			metrics.TotalSessions++
 
 			transcriptPath := filepath.Join(a.baseDir, "brain", item.ConversationID, ".system_generated", "logs", "transcript.jsonl")
-			tot, wk, td := a.scanTranscriptTokens(transcriptPath, startOfDay, startOfWeek)
-			metrics.TotalTokens += tot
-			metrics.TokensThisWeek += wk
-			metrics.TokensToday += td
+			res := a.scanTranscriptTokens(transcriptPath, startOfDay, startOfWeek)
+			metrics.TotalTokens += res.totalTokens
+			metrics.TokensThisWeek += res.tokensThisWeek
+			metrics.TokensToday += res.tokensToday
+			totalValidOutTok += res.validOutputTok
+			totalValidDuration += res.validDuration
+
+			for model, ms := range res.modelStats {
+				uniqueModelsMap[model] = true
+				cur := metrics.ModelStats[model]
+				cur.Model = model
+				cur.Turns += ms.Turns
+				cur.TokensToday += ms.TokensToday
+				cur.TokensThisWeek += ms.TokensThisWeek
+				cur.TotalTokens += ms.TotalTokens
+				cur.OutputTokens += ms.OutputTokens
+				cur.DurationSecs += ms.DurationSecs
+				metrics.ModelStats[model] = cur
+			}
+
+			if res.lastModelTime.After(latestModelTime) && res.lastModel != "" {
+				metrics.LastModel = res.lastModel
+				latestModelTime = res.lastModelTime
+			}
 		}
 	}
+
+	for model, ms := range metrics.ModelStats {
+		if ms.DurationSecs > 0 {
+			ms.TokensPerSec = float64(ms.OutputTokens) / ms.DurationSecs
+			metrics.ModelStats[model] = ms
+		}
+	}
+
+	if totalValidDuration > 0 {
+		metrics.TokensPerSec = float64(totalValidOutTok) / totalValidDuration
+	}
+
+	for m := range uniqueModelsMap {
+		metrics.UniqueModels = append(metrics.UniqueModels, m)
+	}
+	sort.Strings(metrics.UniqueModels)
 
 	return metrics, nil
 }
 
-func (a *AgyProvider) scanTranscriptTokens(path string, startOfDay, startOfWeek time.Time) (int64, int64, int64) {
+type agyFileStats struct {
+	totalTokens    int64
+	tokensThisWeek int64
+	tokensToday    int64
+	validOutputTok int64
+	validDuration  float64
+	modelStats     map[string]ModelMetric
+	lastModel      string
+	lastModelTime  time.Time
+}
+
+func (a *AgyProvider) scanTranscriptTokens(path string, startOfDay, startOfWeek time.Time) agyFileStats {
+	res := agyFileStats{
+		modelStats: make(map[string]ModelMetric),
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, 0, 0
+		return res
 	}
 	defer f.Close()
 
@@ -276,12 +358,24 @@ func (a *AgyProvider) scanTranscriptTokens(path string, startOfDay, startOfWeek 
 		fileMod = stat.ModTime()
 	}
 
-	var total, week, today int64
+	activeModel := "gemini-3.8-flash"
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
+	var prevEventTime time.Time
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		if match := agyModelChangeRegex.FindSubmatch(line); len(match) > 1 {
+			if norm := FormatModelName(string(match[1])); norm != "" {
+				activeModel = norm
+			}
+		}
+
 		if !strings.Contains(string(line), `"input_tokens"`) {
 			continue
 		}
@@ -293,7 +387,9 @@ func (a *AgyProvider) scanTranscriptTokens(path string, startOfDay, startOfWeek 
 		}
 		if err := json.Unmarshal(line, &step); err == nil {
 			stepTokens := int64(step.InputTokens + step.OutputTokens)
-			total += stepTokens
+			if stepTokens == 0 {
+				continue
+			}
 
 			stepTime := fileMod
 			if step.CreatedAt != "" {
@@ -304,70 +400,49 @@ func (a *AgyProvider) scanTranscriptTokens(path string, startOfDay, startOfWeek 
 				}
 			}
 
+			res.totalTokens += stepTokens
+			isWeek := !stepTime.IsZero() && (stepTime.After(startOfWeek) || stepTime.Equal(startOfWeek))
+			isToday := !stepTime.IsZero() && (stepTime.After(startOfDay) || stepTime.Equal(startOfDay))
+			if isWeek {
+				res.tokensThisWeek += stepTokens
+			}
+			if isToday {
+				res.tokensToday += stepTokens
+			}
+
+			m := res.modelStats[activeModel]
+			m.Model = activeModel
+			m.Turns++
+			m.TotalTokens += stepTokens
+			if isWeek {
+				m.TokensThisWeek += stepTokens
+			}
+			if isToday {
+				m.TokensToday += stepTokens
+			}
+
+			if !prevEventTime.IsZero() && !stepTime.IsZero() {
+				dt := stepTime.Sub(prevEventTime).Seconds()
+				if step.OutputTokens >= 30 && dt >= 0.5 && dt <= 45.0 {
+					outTok := int64(step.OutputTokens)
+					m.OutputTokens += outTok
+					m.DurationSecs += dt
+					res.validOutputTok += outTok
+					res.validDuration += dt
+				}
+			}
+			res.modelStats[activeModel] = m
+
+			if stepTime.After(res.lastModelTime) {
+				res.lastModel = activeModel
+				res.lastModelTime = stepTime
+			}
+
 			if !stepTime.IsZero() {
-				if stepTime.After(startOfWeek) || stepTime.Equal(startOfWeek) {
-					week += stepTokens
-				}
-				if stepTime.After(startOfDay) || stepTime.Equal(startOfDay) {
-					today += stepTokens
-				}
+				prevEventTime = stepTime
 			}
 		}
 	}
 
-	return total, week, today
-}
-
-func (a *AgyProvider) lookupConversationWorkspace(convID string) string {
-	f, err := os.Open(filepath.Join(a.baseDir, "history.jsonl"))
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
-	cleanID := strings.Trim(strings.TrimSpace(convID), `"'`)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		var item struct {
-			ConversationID string `json:"conversationId"`
-			SessionID      string `json:"session_id"`
-			Workspace      string `json:"workspace"`
-			Cwd            string `json:"cwd"`
-			Project        string `json:"project"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &item); err == nil {
-			id := item.ConversationID
-			if id == "" {
-				id = item.SessionID
-			}
-			if strings.Trim(strings.TrimSpace(id), `"'`) == cleanID {
-				ws := item.Workspace
-				if ws == "" {
-					ws = item.Cwd
-				}
-				if ws == "" {
-					ws = item.Project
-				}
-				return strings.Trim(strings.TrimSpace(ws), `"'`)
-			}
-		}
-	}
-	return ""
-}
-
-var userRequestRegex = regexp.MustCompile(`(?s)<\/?USER_REQUEST>`)
-var truncatedMarkerRegex = regexp.MustCompile(`(?i)<truncated\s+[^>]+>`)
-var additionalMetaRegex = regexp.MustCompile(`(?s)<ADDITIONAL_METADATA>.*?(?:</ADDITIONAL_METADATA>|$)`)
-
-func cleanUserPrompt(s string) string {
-	res := userRequestRegex.ReplaceAllString(s, "")
-	res = additionalMetaRegex.ReplaceAllString(res, "")
-	res = truncatedMarkerRegex.ReplaceAllString(res, "")
-	return strings.TrimSpace(res)
-}
-
-func cleanThinking(s string) string {
-	res := truncatedMarkerRegex.ReplaceAllString(s, "")
-	return strings.TrimSpace(res)
+	return res
 }

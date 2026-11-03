@@ -61,3 +61,49 @@ func TestFormatNumber(t *testing.T) {
 		t.Errorf("expected '1,849,939,873', got %q", formatNumber(1849939873))
 	}
 }
+
+func TestRenderDashboardWithModelsAndSpeed(t *testing.T) {
+	statsList := []ProviderStats{
+		{
+			Name:          "claude",
+			Status:        cooldown.StatusActive,
+			SessionsCount: 5,
+			LastModel:     "claude-sonnet-4-5",
+			UniqueModels:  []string{"claude-opus-4-6", "claude-sonnet-4-5"},
+			TokensToday:   12000,
+			TotalTokens:   150000,
+			TokensPerSec:  52.4,
+			ModelStats: map[string]provider.ModelMetric{
+				"claude-opus-4-6": {
+					Model:        "claude-opus-4-6",
+					Turns:        10,
+					TotalTokens:  50000,
+					TokensToday:  2000,
+					TokensPerSec: 35.0,
+				},
+				"claude-sonnet-4-5": {
+					Model:        "claude-sonnet-4-5",
+					Turns:        25,
+					TotalTokens:  100000,
+					TokensToday:  10000,
+					TokensPerSec: 58.2,
+				},
+			},
+		},
+	}
+
+	output := RenderDashboard(statsList)
+
+	if !strings.Contains(output, "claude-sonnet-4-5 (+1)") {
+		t.Errorf("expected model with (+1) suffix, got:\n%s", output)
+	}
+	if !strings.Contains(output, "52.4 tok/s") {
+		t.Errorf("expected 52.4 tok/s speed in main table, got:\n%s", output)
+	}
+	if !strings.Contains(output, "MODEL BREAKDOWN") {
+		t.Errorf("expected MODEL BREAKDOWN sub-table, got:\n%s", output)
+	}
+	if !strings.Contains(output, "claude-sonnet-4-5") || !strings.Contains(output, "claude-opus-4-6") {
+		t.Errorf("expected both models in breakdown table, got:\n%s", output)
+	}
+}

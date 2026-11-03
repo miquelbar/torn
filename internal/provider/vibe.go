@@ -119,6 +119,34 @@ func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error)
 		Turns: make([]Turn, 0),
 	}
 
+	activeModel := "glm-5-3"
+	metaPath := filepath.Join(sessionPath, "meta.json")
+	if !stat.IsDir() {
+		metaPath = filepath.Join(filepath.Dir(sessionPath), "meta.json")
+	}
+	if metaData, err := os.ReadFile(metaPath); err == nil {
+		var meta struct {
+			Config struct {
+				ActiveModel string `json:"active_model"`
+			} `json:"config"`
+			Experiments struct {
+				DefaultValue struct {
+					ActiveModel string `json:"active_model"`
+				} `json:"defaultValue"`
+			} `json:"experiments"`
+		}
+		if err := json.Unmarshal(metaData, &meta); err == nil {
+			if m := FormatModelName(meta.Config.ActiveModel); m != "" {
+				activeModel = m
+			} else if m := FormatModelName(meta.Experiments.DefaultValue.ActiveModel); m != "" {
+				activeModel = m
+			}
+		}
+	}
+	if activeModel != "" {
+		details.ModelsUsed = append(details.ModelsUsed, activeModel)
+	}
+
 	messagesFile := filepath.Join(sessionPath, "messages.jsonl")
 	if !stat.IsDir() {
 		messagesFile = sessionPath
@@ -171,6 +199,7 @@ func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error)
 			details.Turns = append(details.Turns, Turn{
 				Role:      "user",
 				Text:      extracted.Text,
+				Model:     activeModel,
 				Timestamp: stat.ModTime(),
 			})
 			details.LastUserMessage = extracted.Text
@@ -184,6 +213,7 @@ func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error)
 					Role:      "assistant",
 					Text:      text,
 					Tools:     tools,
+					Model:     activeModel,
 					Timestamp: stat.ModTime(),
 				})
 				if text != "" {
@@ -197,7 +227,9 @@ func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error)
 }
 
 func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
-	var metrics UsageMetrics
+	metrics := UsageMetrics{
+		ModelStats: make(map[string]ModelMetric),
+	}
 	sessionDir := filepath.Join(v.baseDir, "logs", "session")
 	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
@@ -206,6 +238,11 @@ func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	startOfWeek := startOfDay.AddDate(0, 0, -7)
+
+	var totalValidOutTok int64
+	var totalValidDuration float64
+	var latestModelTime time.Time
+	uniqueModelsMap := make(map[string]bool)
 
 	for _, entry := range entries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
@@ -221,13 +258,33 @@ func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 		var meta struct {
 			StartTime string `json:"start_time"`
 			Stats     struct {
-				PromptTokens     int64 `json:"session_prompt_tokens"`
-				CachedTokens     int64 `json:"session_cached_tokens"`
-				CompletionTokens int64 `json:"session_completion_tokens"`
-				TotalTokens      int64 `json:"session_total_llm_tokens"`
+				PromptTokens     int64   `json:"session_prompt_tokens"`
+				CachedTokens     int64   `json:"session_cached_tokens"`
+				CompletionTokens int64   `json:"session_completion_tokens"`
+				TotalTokens      int64   `json:"session_total_llm_tokens"`
+				TokensPerSecond  float64 `json:"tokens_per_second"`
+				LastTurnDuration float64 `json:"last_turn_duration"`
+				Steps            int     `json:"steps"`
 			} `json:"stats"`
+			Config struct {
+				ActiveModel string `json:"active_model"`
+			} `json:"config"`
+			Experiments struct {
+				DefaultValue struct {
+					ActiveModel string `json:"active_model"`
+				} `json:"defaultValue"`
+			} `json:"experiments"`
 		}
 		if err := json.Unmarshal(metaData, &meta); err == nil {
+			model := FormatModelName(meta.Config.ActiveModel)
+			if model == "" {
+				model = FormatModelName(meta.Experiments.DefaultValue.ActiveModel)
+			}
+			if model == "" {
+				model = "glm-5-3"
+			}
+			uniqueModelsMap[model] = true
+
 			nonCachedPrompt := meta.Stats.PromptTokens - meta.Stats.CachedTokens
 			if nonCachedPrompt < 0 {
 				nonCachedPrompt = 0
@@ -255,14 +312,58 @@ func (v *VibeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 				t = info.ModTime()
 			}
 
-			if t.After(startOfWeek) || t.Equal(startOfWeek) {
+			isWeek := t.After(startOfWeek) || t.Equal(startOfWeek)
+			isToday := t.After(startOfDay) || t.Equal(startOfDay)
+
+			if isWeek {
 				metrics.TokensThisWeek += tokens
 			}
-			if t.After(startOfDay) || t.Equal(startOfDay) {
+			if isToday {
 				metrics.TokensToday += tokens
+			}
+
+			m := metrics.ModelStats[model]
+			m.Model = model
+			m.Turns += meta.Stats.Steps
+			m.TotalTokens += tokens
+			if isWeek {
+				m.TokensThisWeek += tokens
+			}
+			if isToday {
+				m.TokensToday += tokens
+			}
+
+			if meta.Stats.TokensPerSecond > 0 && meta.Stats.CompletionTokens > 0 {
+				duration := float64(meta.Stats.CompletionTokens) / meta.Stats.TokensPerSecond
+				m.OutputTokens += meta.Stats.CompletionTokens
+				m.DurationSecs += duration
+				totalValidOutTok += meta.Stats.CompletionTokens
+				totalValidDuration += duration
+			}
+			metrics.ModelStats[model] = m
+
+			if t.After(latestModelTime) {
+				metrics.LastModel = model
+				latestModelTime = t
 			}
 		}
 	}
+
+	for model, ms := range metrics.ModelStats {
+		if ms.DurationSecs > 0 {
+			ms.TokensPerSec = float64(ms.OutputTokens) / ms.DurationSecs
+			metrics.ModelStats[model] = ms
+		}
+	}
+
+	if totalValidDuration > 0 {
+		metrics.TokensPerSec = float64(totalValidOutTok) / totalValidDuration
+	}
+
+	for m := range uniqueModelsMap {
+		metrics.UniqueModels = append(metrics.UniqueModels, m)
+	}
+	sort.Strings(metrics.UniqueModels)
 
 	return metrics, nil
 }

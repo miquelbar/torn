@@ -43,6 +43,9 @@ func (b *Builder) Build(proj *project.Info, fromCLI string, toCLI string, detail
 	if proj.IsGit && proj.GitHead != "" {
 		sb.WriteString(fmt.Sprintf("**Git HEAD:** `%s`\n", proj.GitHead))
 	}
+	if details != nil && len(details.ModelsUsed) > 0 {
+		sb.WriteString(fmt.Sprintf("**Source Models:** %s\n", strings.Join(details.ModelsUsed, " ➔ ")))
+	}
 	sb.WriteString(fmt.Sprintf("**Relay:** `%s` ➔ `%s`\n\n", fromCLI, toCLI))
 
 	if opts.Fresh {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -193,12 +192,31 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 				}
 			}
 
+			modelStr, _ := msgMap["model"].(string)
+			if modelStr == "" {
+				modelStr, _ = raw["model"].(string)
+			}
+			normModel := FormatModelName(modelStr)
+			if normModel != "" {
+				found := false
+				for _, m := range details.ModelsUsed {
+					if m == normModel {
+						found = true
+						break
+					}
+				}
+				if !found {
+					details.ModelsUsed = append(details.ModelsUsed, normModel)
+				}
+			}
+
 			if extracted.Text != "" || len(extracted.Tools) > 0 {
 				details.Turns = append(details.Turns, Turn{
 					Role:      "assistant",
 					Text:      extracted.Text,
 					Tools:     extracted.Tools,
 					Tokens:    turnTokens,
+					Model:     normModel,
 					Timestamp: stat.ModTime(),
 				})
 				if extracted.Text != "" {
@@ -212,7 +230,9 @@ func (c *ClaudeProvider) ParseSession(sessionPath string) (*SessionDetails, erro
 }
 
 func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
-	var metrics UsageMetrics
+	metrics := UsageMetrics{
+		ModelStats: make(map[string]ModelMetric),
+	}
 	projectsDir := filepath.Join(c.baseDir, "projects")
 
 	entries, err := os.ReadDir(projectsDir)
@@ -222,6 +242,11 @@ func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	startOfWeek := startOfDay.AddDate(0, 0, -7)
+
+	var totalValidOutTok int64
+	var totalValidDuration float64
+	var latestModelTime time.Time
+	uniqueModelsMap := make(map[string]bool)
 
 	for _, pEntry := range entries {
 		if !pEntry.IsDir() {
@@ -244,34 +269,111 @@ func (c *ClaudeProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 			}
 
 			filePath := filepath.Join(pDir, f.Name())
-			tot, wk, td := c.scanFileTokens(filePath, fInfo.ModTime(), startOfDay, startOfWeek)
-			metrics.TotalTokens += tot
-			metrics.TokensThisWeek += wk
-			metrics.TokensToday += td
+			res := c.scanFileTokens(filePath, fInfo.ModTime(), startOfDay, startOfWeek)
+			metrics.TotalTokens += res.totalTokens
+			metrics.TokensThisWeek += res.tokensThisWeek
+			metrics.TokensToday += res.tokensToday
+			totalValidOutTok += res.validOutputTok
+			totalValidDuration += res.validDuration
+
+			for model, ms := range res.modelStats {
+				uniqueModelsMap[model] = true
+				cur := metrics.ModelStats[model]
+				cur.Model = model
+				cur.Turns += ms.Turns
+				cur.TokensToday += ms.TokensToday
+				cur.TokensThisWeek += ms.TokensThisWeek
+				cur.TotalTokens += ms.TotalTokens
+				cur.OutputTokens += ms.OutputTokens
+				cur.DurationSecs += ms.DurationSecs
+				metrics.ModelStats[model] = cur
+			}
+
+			if res.lastModelTime.After(latestModelTime) && res.lastModel != "" {
+				metrics.LastModel = res.lastModel
+				latestModelTime = res.lastModelTime
+			}
 		}
 	}
+
+	for model, ms := range metrics.ModelStats {
+		if ms.DurationSecs > 0 {
+			ms.TokensPerSec = float64(ms.OutputTokens) / ms.DurationSecs
+			metrics.ModelStats[model] = ms
+		}
+	}
+
+	if totalValidDuration > 0 {
+		metrics.TokensPerSec = float64(totalValidOutTok) / totalValidDuration
+	}
+
+	for m := range uniqueModelsMap {
+		metrics.UniqueModels = append(metrics.UniqueModels, m)
+	}
+	sort.Strings(metrics.UniqueModels)
 
 	return metrics, nil
 }
 
-func (c *ClaudeProvider) scanFileTokens(path string, fileMod time.Time, startOfDay, startOfWeek time.Time) (int64, int64, int64) {
+type claudeFileStats struct {
+	totalTokens    int64
+	tokensThisWeek int64
+	tokensToday    int64
+	validOutputTok int64
+	validDuration  float64
+	modelStats     map[string]ModelMetric
+	lastModel      string
+	lastModelTime  time.Time
+}
+
+func (c *ClaudeProvider) scanFileTokens(path string, fileMod time.Time, startOfDay, startOfWeek time.Time) claudeFileStats {
+	res := claudeFileStats{
+		modelStats: make(map[string]ModelMetric),
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, 0, 0
+		return res
 	}
 	defer f.Close()
 
 	type msgRecord struct {
-		tokens int64
-		time   time.Time
+		id           string
+		model        string
+		tokens       int64
+		outputTokens int64
+		time         time.Time
+		durationSecs float64
 	}
 	seenMsgs := make(map[string]msgRecord)
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
+	var prevEventTime time.Time
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var base struct {
+			Timestamp string `json:"timestamp"`
+		}
+		_ = json.Unmarshal(line, &base)
+		var curTime time.Time
+		if base.Timestamp != "" {
+			if t, err := time.Parse(time.RFC3339Nano, base.Timestamp); err == nil {
+				curTime = t
+			} else if t, err := time.Parse(time.RFC3339, base.Timestamp); err == nil {
+				curTime = t
+			}
+		}
+
 		if !strings.Contains(string(line), `"usage"`) {
+			if !curTime.IsZero() {
+				prevEventTime = curTime
+			}
 			continue
 		}
 
@@ -279,6 +381,7 @@ func (c *ClaudeProvider) scanFileTokens(path string, fileMod time.Time, startOfD
 			Timestamp string `json:"timestamp"`
 			Message   struct {
 				ID    string         `json:"id"`
+				Model string         `json:"model"`
 				Usage map[string]any `json:"usage"`
 			} `json:"message"`
 		}
@@ -289,7 +392,9 @@ func (c *ClaudeProvider) scanFileTokens(path string, fileMod time.Time, startOfD
 			msgTokens := inTok + outTok
 
 			msgTime := fileMod
-			if raw.Timestamp != "" {
+			if !curTime.IsZero() {
+				msgTime = curTime
+			} else if raw.Timestamp != "" {
 				if t, err := time.Parse(time.RFC3339Nano, raw.Timestamp); err == nil {
 					msgTime = t
 				} else if t, err := time.Parse(time.RFC3339, raw.Timestamp); err == nil {
@@ -297,71 +402,74 @@ func (c *ClaudeProvider) scanFileTokens(path string, fileMod time.Time, startOfD
 				}
 			}
 
+			model := FormatModelName(raw.Message.Model)
+			if model == "" {
+				model = "claude-sonnet-4-5"
+			}
+
+			var dt float64
+			if !prevEventTime.IsZero() && !msgTime.IsZero() {
+				diff := msgTime.Sub(prevEventTime).Seconds()
+				if outTok >= 30 && diff >= 0.5 && diff <= 45.0 {
+					dt = diff
+				}
+			}
+
 			id := raw.Message.ID
 			if id == "" {
 				id = fmt.Sprintf("anon_%d", len(seenMsgs))
 			}
-			seenMsgs[id] = msgRecord{tokens: msgTokens, time: msgTime}
+			seenMsgs[id] = msgRecord{
+				id:           id,
+				model:        model,
+				tokens:       msgTokens,
+				outputTokens: outTok,
+				time:         msgTime,
+				durationSecs: dt,
+			}
+
+			if !msgTime.IsZero() {
+				prevEventTime = msgTime
+			}
 		}
 	}
 
-	var total, week, today int64
 	for _, rec := range seenMsgs {
-		total += rec.tokens
-		if rec.time.After(startOfWeek) || rec.time.Equal(startOfWeek) {
-			week += rec.tokens
+		res.totalTokens += rec.tokens
+		isToday := rec.time.After(startOfDay) || rec.time.Equal(startOfDay)
+		isWeek := rec.time.After(startOfWeek) || rec.time.Equal(startOfWeek)
+		if isWeek {
+			res.tokensThisWeek += rec.tokens
 		}
-		if rec.time.After(startOfDay) || rec.time.Equal(startOfDay) {
-			today += rec.tokens
+		if isToday {
+			res.tokensToday += rec.tokens
 		}
-	}
-	return total, week, today
-}
 
-var resetRegex = regexp.MustCompile(`(?i)resets\s+(\d{1,2}(?::\d{2})?[ap]m)(?:\s*\(([^)]+)\))?`)
+		m := res.modelStats[rec.model]
+		m.Model = rec.model
+		m.Turns++
+		m.TotalTokens += rec.tokens
+		if isWeek {
+			m.TokensThisWeek += rec.tokens
+		}
+		if isToday {
+			m.TokensToday += rec.tokens
+		}
+		if rec.durationSecs > 0 {
+			m.OutputTokens += rec.outputTokens
+			m.DurationSecs += rec.durationSecs
+			res.validOutputTok += rec.outputTokens
+			res.validDuration += rec.durationSecs
+		}
+		res.modelStats[rec.model] = m
 
-// ExtractResetTime extracts cooldown reset timestamps from messages like:
-// "You've hit your session limit · resets 12:30pm (Europe/Madrid) · progress saved"
-func ExtractResetTime(text string, refTime time.Time, now time.Time) *time.Time {
-	m := resetRegex.FindStringSubmatch(text)
-	if len(m) < 2 {
-		return nil
-	}
-
-	timeStr := strings.ToLower(strings.TrimSpace(m[1]))
-	var parsedHour, parsedMin int
-	parsed, err := time.Parse("3:04pm", timeStr)
-	if err != nil {
-		parsed, err = time.Parse("3pm", timeStr)
-	}
-	if err != nil {
-		return nil
-	}
-	parsedHour = parsed.Hour()
-	parsedMin = parsed.Minute()
-
-	loc := now.Location()
-	if len(m) > 2 && m[2] != "" {
-		if l, err := time.LoadLocation(strings.TrimSpace(m[2])); err == nil {
-			loc = l
+		if rec.time.After(res.lastModelTime) {
+			res.lastModel = rec.model
+			res.lastModelTime = rec.time
 		}
 	}
 
-	if refTime.IsZero() {
-		refTime = now
-	}
-	refInLoc := refTime.In(loc)
-	candidate := time.Date(refInLoc.Year(), refInLoc.Month(), refInLoc.Day(), parsedHour, parsedMin, 0, 0, loc)
-
-	if candidate.Before(refInLoc) {
-		candidate = candidate.AddDate(0, 0, 1)
-	}
-
-	if candidate.After(now) {
-		return &candidate
-	}
-
-	return nil
+	return res
 }
 
 func toInt64(v any) int64 {

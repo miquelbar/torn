@@ -371,3 +371,56 @@ func TestExtractResetTime(t *testing.T) {
 		t.Errorf("expected nil for expired reset, got %v", oldRes)
 	}
 }
+
+func TestMultiModelSessionSwitching(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewClaude(tempDir)
+
+	cwd := "/Users/test/Projects/model-switch"
+	slug := p.PathToSlug(cwd)
+	projectDir := filepath.Join(tempDir, "projects", slug)
+	_ = os.MkdirAll(projectDir, 0755)
+
+	sessionFile := filepath.Join(projectDir, "session-switching.jsonl")
+	// Turn 1 with Opus: delta 4.0s, 200 output tokens -> 50 tok/s
+	// Turn 2 with Sonnet: delta 2.0s, 100 output tokens -> 50 tok/s
+	content := `{"parentUuid":null,"type":"user","message":{"role":"user","content":"Plan architecture"},"timestamp":"2026-11-03T10:00:00Z"}
+{"parentUuid":"1","type":"assistant","message":{"id":"msg1","model":"claude-opus-4-6-20251001","role":"assistant","content":[{"type":"text","text":"Planning with Opus"}],"usage":{"input_tokens":1000,"output_tokens":200}},"timestamp":"2026-11-03T10:00:04Z"}
+{"parentUuid":"2","type":"user","message":{"role":"user","content":"Now implement it"},"timestamp":"2026-11-03T10:00:10Z"}
+{"parentUuid":"3","type":"assistant","message":{"id":"msg2","model":"claude-sonnet-4-5-20250929","role":"assistant","content":[{"type":"text","text":"Implementing with Sonnet"}],"usage":{"input_tokens":1500,"output_tokens":100}},"timestamp":"2026-11-03T10:00:12Z"}
+`
+	_ = os.WriteFile(sessionFile, []byte(content), 0644)
+
+	details, err := p.ParseSession(sessionFile)
+	if err != nil {
+		t.Fatalf("ParseSession failed: %v", err)
+	}
+
+	if len(details.ModelsUsed) != 2 {
+		t.Fatalf("expected 2 models used, got %d: %v", len(details.ModelsUsed), details.ModelsUsed)
+	}
+	if details.ModelsUsed[0] != "claude-opus-4-6" || details.ModelsUsed[1] != "claude-sonnet-4-5" {
+		t.Errorf("expected [claude-opus-4-6 claude-sonnet-4-5], got %v", details.ModelsUsed)
+	}
+
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	usage, err := p.CollectUsage(now)
+	if err != nil {
+		t.Fatalf("CollectUsage failed: %v", err)
+	}
+
+	if len(usage.ModelStats) != 2 {
+		t.Fatalf("expected 2 model stats, got %d", len(usage.ModelStats))
+	}
+	opus := usage.ModelStats["claude-opus-4-6"]
+	if opus.TotalTokens != 1200 {
+		t.Errorf("expected 1200 opus tokens, got %d", opus.TotalTokens)
+	}
+	sonnet := usage.ModelStats["claude-sonnet-4-5"]
+	if sonnet.TotalTokens != 1600 {
+		t.Errorf("expected 1600 sonnet tokens, got %d", sonnet.TotalTokens)
+	}
+	if usage.TokensPerSec <= 0 {
+		t.Errorf("expected positive TokensPerSec, got %f", usage.TokensPerSec)
+	}
+}

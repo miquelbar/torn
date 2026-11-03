@@ -159,6 +159,8 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
+	activeModel := "gpt-5.5"
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -176,6 +178,26 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 			continue
 		}
 
+		if lineType == "turn_context" || lineType == "session_meta" {
+			if m, ok := payload["model"].(string); ok && m != "" {
+				if norm := FormatModelName(m); norm != "" {
+					activeModel = norm
+				}
+			}
+		}
+
+		recordModel := func() {
+			if activeModel == "" {
+				return
+			}
+			for _, m := range details.ModelsUsed {
+				if m == activeModel {
+					return
+				}
+			}
+			details.ModelsUsed = append(details.ModelsUsed, activeModel)
+		}
+
 		// 1. Check response_item
 		if lineType == "response_item" {
 			role, _ := payload["role"].(string)
@@ -185,10 +207,12 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 			}
 
 			if extracted.Text != "" || len(extracted.Tools) > 0 {
+				recordModel()
 				details.Turns = append(details.Turns, Turn{
 					Role:      role,
 					Text:      extracted.Text,
 					Tools:     extracted.Tools,
+					Model:     activeModel,
 					Timestamp: stat.ModTime(),
 				})
 				if role == "user" && extracted.Text != "" {
@@ -206,9 +230,11 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 				case "UserMessage":
 					extracted := ParseContentBlock(item["content"])
 					if extracted.Text != "" {
+						recordModel()
 						details.Turns = append(details.Turns, Turn{
 							Role:      "user",
 							Text:      extracted.Text,
+							Model:     activeModel,
 							Timestamp: stat.ModTime(),
 						})
 						details.LastUserMessage = extracted.Text
@@ -216,9 +242,11 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 				case "AgentMessage":
 					extracted := ParseContentBlock(item["content"])
 					if extracted.Text != "" {
+						recordModel()
 						details.Turns = append(details.Turns, Turn{
 							Role:      "assistant",
 							Text:      extracted.Text,
+							Model:     activeModel,
 							Timestamp: stat.ModTime(),
 						})
 						details.LastAssistantMessage = extracted.Text
@@ -232,9 +260,11 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 						}
 					}
 					if len(parts) > 0 {
+						recordModel()
 						details.Turns = append(details.Turns, Turn{
 							Role:      "assistant",
 							Tools:     []string{fmt.Sprintf("exec(%s)", strings.Join(parts, " "))},
+							Model:     activeModel,
 							Timestamp: stat.ModTime(),
 						})
 					}
@@ -247,10 +277,17 @@ func (c *CodexProvider) ParseSession(sessionPath string) (*SessionDetails, error
 }
 
 func (c *CodexProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
-	var metrics UsageMetrics
+	metrics := UsageMetrics{
+		ModelStats: make(map[string]ModelMetric),
+	}
 
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	startOfWeek := startOfDay.AddDate(0, 0, -7)
+
+	var totalValidOutTok int64
+	var totalValidDuration float64
+	var latestModelTime time.Time
+	uniqueModelsMap := make(map[string]bool)
 
 	sessionsDir := filepath.Join(c.baseDir, "sessions")
 	_ = filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
@@ -267,61 +304,193 @@ func (c *CodexProvider) CollectUsage(now time.Time) (UsageMetrics, error) {
 			return nil
 		}
 
-		realTokens := c.scanRolloutTokens(path)
-		metrics.TotalTokens += realTokens
-		if info.ModTime().After(startOfWeek) || info.ModTime().Equal(startOfWeek) {
-			metrics.TokensThisWeek += realTokens
+		res := c.scanRolloutTokens(path, info.ModTime(), startOfDay, startOfWeek)
+		metrics.TotalTokens += res.totalTokens
+		metrics.TokensThisWeek += res.tokensThisWeek
+		metrics.TokensToday += res.tokensToday
+		totalValidOutTok += res.validOutputTok
+		totalValidDuration += res.validDuration
+
+		for model, ms := range res.modelStats {
+			uniqueModelsMap[model] = true
+			cur := metrics.ModelStats[model]
+			cur.Model = model
+			cur.Turns += ms.Turns
+			cur.TokensToday += ms.TokensToday
+			cur.TokensThisWeek += ms.TokensThisWeek
+			cur.TotalTokens += ms.TotalTokens
+			cur.OutputTokens += ms.OutputTokens
+			cur.DurationSecs += ms.DurationSecs
+			metrics.ModelStats[model] = cur
 		}
-		if info.ModTime().After(startOfDay) || info.ModTime().Equal(startOfDay) {
-			metrics.TokensToday += realTokens
+
+		if res.lastModelTime.After(latestModelTime) && res.lastModel != "" {
+			metrics.LastModel = res.lastModel
+			latestModelTime = res.lastModelTime
 		}
 		return nil
 	})
 
+	for model, ms := range metrics.ModelStats {
+		if ms.DurationSecs > 0 {
+			ms.TokensPerSec = float64(ms.OutputTokens) / ms.DurationSecs
+			metrics.ModelStats[model] = ms
+		}
+	}
+
+	if totalValidDuration > 0 {
+		metrics.TokensPerSec = float64(totalValidOutTok) / totalValidDuration
+	}
+
+	for m := range uniqueModelsMap {
+		metrics.UniqueModels = append(metrics.UniqueModels, m)
+	}
+	sort.Strings(metrics.UniqueModels)
+
 	return metrics, nil
 }
 
-func (c *CodexProvider) scanRolloutTokens(path string) int64 {
+type codexUsageInfo struct {
+	InputTokens       int64 `json:"input_tokens"`
+	CachedInputTokens int64 `json:"cached_input_tokens"`
+	OutputTokens      int64 `json:"output_tokens"`
+}
+
+type codexFileStats struct {
+	totalTokens    int64
+	tokensThisWeek int64
+	tokensToday    int64
+	validOutputTok int64
+	validDuration  float64
+	modelStats     map[string]ModelMetric
+	lastModel      string
+	lastModelTime  time.Time
+}
+
+func (c *CodexProvider) scanRolloutTokens(path string, fileMod time.Time, startOfDay, startOfWeek time.Time) codexFileStats {
+	res := codexFileStats{
+		modelStats: make(map[string]ModelMetric),
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
-		return 0
+		return res
 	}
 	defer f.Close()
 
-	var lastIn, lastCached, lastOut int64
+	activeModel := "gpt-5.5"
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
+	var prevEventTime time.Time
+	var prevTotalIn, prevTotalCached, prevTotalOut int64
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if !strings.Contains(string(line), `"total_token_usage"`) {
+		if len(line) == 0 {
 			continue
 		}
 
 		var raw struct {
-			Payload struct {
-				Info struct {
-					TotalTokenUsage struct {
-						InputTokens       int64 `json:"input_tokens"`
-						CachedInputTokens int64 `json:"cached_input_tokens"`
-						OutputTokens      int64 `json:"output_tokens"`
-					} `json:"total_token_usage"`
+			Timestamp string `json:"timestamp"`
+			Type      string `json:"type"`
+			Payload   struct {
+				Model string `json:"model"`
+				Info  struct {
+					TotalTokenUsage codexUsageInfo `json:"total_token_usage"`
+					LastTokenUsage  codexUsageInfo `json:"last_token_usage"`
 				} `json:"info"`
 			} `json:"payload"`
 		}
-		if err := json.Unmarshal(line, &raw); err == nil {
-			u := raw.Payload.Info.TotalTokenUsage
-			if u.InputTokens > 0 || u.OutputTokens > 0 {
-				lastIn = u.InputTokens
-				lastCached = u.CachedInputTokens
-				lastOut = u.OutputTokens
+
+		if err := json.Unmarshal(line, &raw); err != nil {
+			continue
+		}
+
+		if raw.Type == "turn_context" || raw.Type == "session_meta" {
+			if raw.Payload.Model != "" {
+				if norm := FormatModelName(raw.Payload.Model); norm != "" {
+					activeModel = norm
+				}
 			}
+		}
+
+		var eventTime time.Time
+		if raw.Timestamp != "" {
+			if t, err := time.Parse(time.RFC3339Nano, raw.Timestamp); err == nil {
+				eventTime = t
+			} else if t, err := time.Parse(time.RFC3339, raw.Timestamp); err == nil {
+				eventTime = t
+			}
+		}
+		if eventTime.IsZero() {
+			eventTime = fileMod
+		}
+
+		lastU := raw.Payload.Info.LastTokenUsage
+		totU := raw.Payload.Info.TotalTokenUsage
+
+		var turnIn, turnCached, turnOut int64
+
+		if lastU.InputTokens > 0 || lastU.OutputTokens > 0 {
+			turnIn = lastU.InputTokens
+			turnCached = lastU.CachedInputTokens
+			turnOut = lastU.OutputTokens
+		} else if totU.InputTokens > 0 || totU.OutputTokens > 0 {
+			if totU.InputTokens >= prevTotalIn && totU.OutputTokens >= prevTotalOut {
+				turnIn = totU.InputTokens - prevTotalIn
+				turnCached = totU.CachedInputTokens - prevTotalCached
+				turnOut = totU.OutputTokens - prevTotalOut
+			}
+			prevTotalIn = totU.InputTokens
+			prevTotalCached = totU.CachedInputTokens
+			prevTotalOut = totU.OutputTokens
+		}
+
+		nonCachedIn := turnIn - turnCached
+		if nonCachedIn < 0 {
+			nonCachedIn = 0
+		}
+		turnTokens := nonCachedIn + turnOut
+
+		if turnTokens > 0 {
+			res.totalTokens += turnTokens
+			isWeek := eventTime.After(startOfWeek) || eventTime.Equal(startOfWeek)
+			isToday := eventTime.After(startOfDay) || eventTime.Equal(startOfDay)
+			m := res.modelStats[activeModel]
+			m.Model = activeModel
+			m.TotalTokens += turnTokens
+			m.Turns++
+			if isWeek {
+				res.tokensThisWeek += turnTokens
+				m.TokensThisWeek += turnTokens
+			}
+			if isToday {
+				res.tokensToday += turnTokens
+				m.TokensToday += turnTokens
+			}
+
+			if !prevEventTime.IsZero() && !eventTime.IsZero() {
+				dt := eventTime.Sub(prevEventTime).Seconds()
+				if turnOut >= 30 && dt >= 0.5 && dt <= 45.0 {
+					m.OutputTokens += turnOut
+					m.DurationSecs += dt
+					res.validOutputTok += turnOut
+					res.validDuration += dt
+				}
+			}
+			res.modelStats[activeModel] = m
+
+			if eventTime.After(res.lastModelTime) {
+				res.lastModel = activeModel
+				res.lastModelTime = eventTime
+			}
+		}
+
+		if !eventTime.IsZero() {
+			prevEventTime = eventTime
 		}
 	}
 
-	realIn := lastIn - lastCached
-	if realIn < 0 {
-		realIn = 0
-	}
-	return realIn + lastOut
+	return res
 }
