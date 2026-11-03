@@ -82,6 +82,7 @@ func TestRenderDashboardWithModelsAndSpeed(t *testing.T) {
 			UniqueModels:  []string{"claude-opus-4-6", "claude-sonnet-4-5"},
 			TokensToday:   12000,
 			TotalTokens:   150000,
+			TotalCostUSD:  14.50,
 			TokensPerSec:  52.4,
 			ModelStats: map[string]provider.ModelMetric{
 				"claude-opus-4-6": {
@@ -89,6 +90,7 @@ func TestRenderDashboardWithModelsAndSpeed(t *testing.T) {
 					Turns:        10,
 					TotalTokens:  50000,
 					TokensToday:  2000,
+					CostUSD:      3.30,
 					TokensPerSec: 35.0,
 				},
 				"claude-sonnet-4-5": {
@@ -96,6 +98,7 @@ func TestRenderDashboardWithModelsAndSpeed(t *testing.T) {
 					Turns:        25,
 					TotalTokens:  100000,
 					TokensToday:  10000,
+					CostUSD:      11.20,
 					TokensPerSec: 58.2,
 				},
 			},
@@ -115,5 +118,32 @@ func TestRenderDashboardWithModelsAndSpeed(t *testing.T) {
 	}
 	if !strings.Contains(output, "58.2 t/s") || !strings.Contains(output, "35.0 t/s") {
 		t.Errorf("expected individual model speeds, got:\n%s", output)
+	}
+	if !strings.Contains(output, "$14.50") {
+		t.Errorf("expected $14.50 provider cost, got:\n%s", output)
+	}
+	if !strings.Contains(output, "$11.20") || !strings.Contains(output, "$3.30") {
+		t.Errorf("expected model costs, got:\n%s", output)
+	}
+}
+
+func TestFormatCost(t *testing.T) {
+	tests := []struct {
+		input    float64
+		expected string
+	}{
+		{0.0, "—"},
+		{-5.0, "—"},
+		{0.005, "$0.005"},
+		{0.03, "$0.03"},
+		{22.80, "$22.80"},
+		{1250.00, "$1.2K"},
+	}
+
+	for _, tc := range tests {
+		got := FormatCost(tc.input)
+		if got != tc.expected {
+			t.Errorf("FormatCost(%f) = %q, want %q", tc.input, got, tc.expected)
+		}
 	}
 }

@@ -27,6 +27,7 @@ type ProviderStats struct {
 	TokensPerSec   float64                         `json:"tokens_per_sec"`
 	BurnRatePerMin float64                         `json:"burn_rate_per_min"`
 	ModelStats     map[string]provider.ModelMetric `json:"model_stats,omitempty"`
+	TotalCostUSD   float64                         `json:"total_cost_usd,omitempty"`
 }
 
 // Collector aggregates stats across all configured providers.
@@ -86,6 +87,7 @@ func (c *Collector) Collect(state *storage.State, now time.Time, projectPath ...
 				TokensPerSec:   usage.TokensPerSec,
 				BurnRatePerMin: burnRate,
 				ModelStats:     usage.ModelStats,
+				TotalCostUSD:   usage.TotalCostUSD,
 			}
 		}(i, p)
 	}
@@ -111,8 +113,8 @@ func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string
 
 	sb.WriteString("\n\033[1m" + title + "\033[0m\n")
 	sb.WriteString(divider)
-	sb.WriteString(fmt.Sprintf("\033[90m%-36s  %-12s  %9s  %9s  %10s  %10s  %10s\033[0m\n",
-		"PROVIDER / MODEL", "STATUS", "COOLDOWN", "SESSIONS", "TODAY", "TOTAL", "SPEED"))
+	sb.WriteString(fmt.Sprintf("\033[90m%-30s  %-12s  %8s  %8s  %9s  %9s  %9s  %9s\033[0m\n",
+		"PROVIDER / MODEL", "STATUS", "COOLDOWN", "SESSIONS", "TODAY", "TOTAL", "COST", "SPEED"))
 	sb.WriteString(divider)
 
 	for _, ps := range statsList {
@@ -121,29 +123,31 @@ func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string
 		var cooldownCol string
 		if ps.CooldownTime > 0 {
 			durStr := cooldown.FormatDuration(ps.CooldownTime)
-			cooldownCol = padLeftColor(durStr, 9, "\033[31m")
+			cooldownCol = padLeftColor(durStr, 8, "\033[31m")
 		} else {
-			cooldownCol = padLeft("—", 9)
+			cooldownCol = padLeft("—", 8)
 		}
 
-		sessionsCol := padLeft(FormatCompactNumber(int64(ps.SessionsCount)), 9)
-		todayCol := padLeft(FormatCompactNumber(ps.TokensToday), 10)
-		totalCol := padLeft(FormatCompactNumber(ps.TotalTokens), 10)
+		sessionsCol := padLeft(FormatCompactNumber(int64(ps.SessionsCount)), 8)
+		todayCol := padLeft(FormatCompactNumber(ps.TokensToday), 9)
+		totalCol := padLeft(FormatCompactNumber(ps.TotalTokens), 9)
+		costCol := padLeft(FormatCost(ps.TotalCostUSD), 9)
 
 		var speedCol string
 		if ps.TokensPerSec > 0 {
-			speedCol = padLeft(fmt.Sprintf("%.1f t/s", ps.TokensPerSec), 10)
+			speedCol = padLeft(fmt.Sprintf("%.1f t/s", ps.TokensPerSec), 9)
 		} else {
-			speedCol = padLeft("—", 10)
+			speedCol = padLeft("—", 9)
 		}
 
-		sb.WriteString(fmt.Sprintf("\033[1m%-36s\033[0m  %s  %s  %s  %s  %s  %s\n",
+		sb.WriteString(fmt.Sprintf("\033[1m%-30s\033[0m  %s  %s  %s  %s  %s  %s  %s\n",
 			ps.Name,
 			statusCol,
 			cooldownCol,
 			sessionsCol,
 			todayCol,
 			totalCol,
+			costCol,
 			speedCol,
 		))
 
@@ -167,29 +171,31 @@ func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string
 				}
 
 				modelName := strings.TrimPrefix(m.Model, "claude-")
-				modelName = strutil.Truncate(modelName, 31, "")
-				modelLabel := fmt.Sprintf("  \033[90m%s\033[0m %s", treeGlyph, padRight(modelName, 31))
+				modelName = strutil.Truncate(modelName, 25, "")
+				modelLabel := fmt.Sprintf("  \033[90m%s\033[0m %s", treeGlyph, padRight(modelName, 25))
 
 				mStatusCol := strings.Repeat(" ", 12)
-				mCooldownCol := strings.Repeat(" ", 9)
-				mTurnsCol := padLeft(FormatCompactNumber(int64(m.Turns)), 9)
-				mTodayCol := padLeft(FormatCompactNumber(m.TokensToday), 10)
-				mTotalCol := padLeft(FormatCompactNumber(m.TotalTokens), 10)
+				mCooldownCol := strings.Repeat(" ", 8)
+				mTurnsCol := padLeft(FormatCompactNumber(int64(m.Turns)), 8)
+				mTodayCol := padLeft(FormatCompactNumber(m.TokensToday), 9)
+				mTotalCol := padLeft(FormatCompactNumber(m.TotalTokens), 9)
+				mCostCol := padLeft(FormatCost(m.CostUSD), 9)
 
 				var mSpeedCol string
 				if m.TokensPerSec > 0 {
-					mSpeedCol = padLeft(fmt.Sprintf("%.1f t/s", m.TokensPerSec), 10)
+					mSpeedCol = padLeft(fmt.Sprintf("%.1f t/s", m.TokensPerSec), 9)
 				} else {
-					mSpeedCol = padLeft("—", 10)
+					mSpeedCol = padLeft("—", 9)
 				}
 
-				sb.WriteString(fmt.Sprintf("%s  %s  %s  %s  %s  %s  %s\n",
+				sb.WriteString(fmt.Sprintf("%s  %s  %s  %s  %s  %s  %s  %s\n",
 					modelLabel,
 					mStatusCol,
 					mCooldownCol,
 					mTurnsCol,
 					mTodayCol,
 					mTotalCol,
+					mCostCol,
 					mSpeedCol,
 				))
 			}
@@ -198,6 +204,20 @@ func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string
 	sb.WriteString(divider)
 
 	return sb.String()
+}
+
+// FormatCost formats a USD amount into a clean compact form like $22.80, $0.03, $1.2K, or —.
+func FormatCost(usd float64) string {
+	if usd <= 0 {
+		return "—"
+	}
+	if usd >= 1000 {
+		return fmt.Sprintf("$%.1fK", usd/1000.0)
+	}
+	if usd < 0.01 {
+		return fmt.Sprintf("$%.3f", usd)
+	}
+	return fmt.Sprintf("$%.2f", usd)
 }
 
 func padRight(s string, width int) string {

@@ -14,6 +14,7 @@ type ModelMetric struct {
 	OutputTokens   int64   `json:"output_tokens"`
 	DurationSecs   float64 `json:"duration_secs"`
 	TokensPerSec   float64 `json:"tokens_per_sec"`
+	CostUSD        float64 `json:"cost_usd,omitempty"`
 }
 
 // Turn represents a single exchange or message turn in an AI agent session.
@@ -45,6 +46,7 @@ type SessionDetails struct {
 	LastAssistantMessage string     `json:"last_assistant_message"`
 	CooldownUntil        *time.Time `json:"cooldown_until,omitempty"`
 	ModelsUsed           []string   `json:"models_used,omitempty"`
+	TotalCostUSD         float64    `json:"total_cost_usd,omitempty"`
 }
 
 // UsageMetrics holds calculated token counts, models, and rates for a provider.
@@ -58,6 +60,7 @@ type UsageMetrics struct {
 	UniqueModels   []string               `json:"unique_models,omitempty"`
 	ModelStats     map[string]ModelMetric `json:"model_stats,omitempty"`
 	TokensPerSec   float64                `json:"tokens_per_sec"`
+	TotalCostUSD   float64                `json:"total_cost_usd,omitempty"`
 }
 
 // Provider defines the interface for interacting with an official AI CLI.

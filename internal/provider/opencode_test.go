@@ -71,6 +71,7 @@ CREATE TABLE session (
 	time_created integer NOT NULL,
 	time_updated integer NOT NULL,
 	model text,
+	cost real DEFAULT 0 NOT NULL,
 	tokens_input integer DEFAULT 0 NOT NULL,
 	tokens_output integer DEFAULT 0 NOT NULL,
 	tokens_reasoning integer DEFAULT 0 NOT NULL
@@ -98,6 +99,7 @@ INSERT INTO session VALUES (
 	1700000000000,
 	1700000500000,
 	'{"id":"xiaomi/mimo-v2.6-pro","providerID":"openrouter"}',
+	0.05,
 	1000, 200, 50
 );
 
@@ -108,6 +110,7 @@ INSERT INTO session VALUES (
 	1700000100000,
 	1700000200000,
 	'{"id":"qwen/qwen3-coder-next"}',
+	0.02,
 	500, 100, 0
 );
 `
@@ -134,7 +137,7 @@ INSERT INTO part VALUES (
 -- Assistant message
 INSERT INTO message VALUES (
 	'msg_asst_1', 'ses_001', %d, %d,
-	'{"role":"assistant","modelID":"xiaomi/mimo-v2.6-pro","tokens":{"total":1150,"input":900,"output":200,"reasoning":50},"time":{"created":%d,"completed":%d}}'
+	'{"role":"assistant","modelID":"xiaomi/mimo-v2.6-pro","cost":0.05,"tokens":{"total":1150,"input":900,"output":200,"reasoning":50},"time":{"created":%d,"completed":%d}}'
 );
 INSERT INTO part VALUES (
 	'prt_asst_text', 'msg_asst_1', 'ses_001', %d, %d,
@@ -226,6 +229,12 @@ INSERT INTO part VALUES (
 	if mStat.TokensPerSec <= 0 {
 		t.Errorf("expected positive tokens per sec, got %f", mStat.TokensPerSec)
 	}
+	if usageProj.TotalCostUSD != 0.05 {
+		t.Errorf("expected 0.05 cost for project, got %f", usageProj.TotalCostUSD)
+	}
+	if mStat.CostUSD != 0.05 {
+		t.Errorf("expected 0.05 cost for model, got %f", mStat.CostUSD)
+	}
 
 	// 4. CollectUsage (Global)
 	usageGlobal, err := p.CollectUsage(now)
@@ -237,6 +246,9 @@ INSERT INTO part VALUES (
 	}
 	if usageGlobal.TotalTokens != 1850 { // 1250 + 600
 		t.Errorf("expected 1850 total tokens global, got %d", usageGlobal.TotalTokens)
+	}
+	if usageGlobal.TotalCostUSD != 0.07 { // 0.05 + 0.02
+		t.Errorf("expected 0.07 total cost global, got %f", usageGlobal.TotalCostUSD)
 	}
 }
 

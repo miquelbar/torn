@@ -69,8 +69,8 @@ func RenderMarkdown(statsList []ProviderStats, opts ...DashboardOptions) string 
 	}
 
 	sb.WriteString("# " + title + "\n\n")
-	sb.WriteString("| Provider | Status | Cooldown | Sessions | Model | Today | Total | Speed |\n")
-	sb.WriteString("| :--- | :--- | :--- | ---: | :--- | ---: | ---: | ---: |\n")
+	sb.WriteString("| Provider | Status | Cooldown | Sessions | Model | Today | Total | Cost | Speed |\n")
+	sb.WriteString("| :--- | :--- | :--- | ---: | :--- | ---: | ---: | ---: | ---: |\n")
 
 	for _, ps := range statsList {
 		statusStr := cleanStatus(ps.Status)
@@ -96,7 +96,7 @@ func RenderMarkdown(statsList []ProviderStats, opts ...DashboardOptions) string 
 			speedStr = fmt.Sprintf("%.1f t/s", ps.TokensPerSec)
 		}
 
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %d | %s | %s | %s | %s |\n",
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %d | %s | %s | %s | %s | %s |\n",
 			ps.Name,
 			statusStr,
 			cooldownStr,
@@ -104,6 +104,7 @@ func RenderMarkdown(statsList []ProviderStats, opts ...DashboardOptions) string 
 			modelStr,
 			formatNumber(ps.TokensToday),
 			formatNumber(ps.TotalTokens),
+			FormatCost(ps.TotalCostUSD),
 			speedStr,
 		))
 	}
@@ -111,8 +112,8 @@ func RenderMarkdown(statsList []ProviderStats, opts ...DashboardOptions) string 
 	allModels := sortedModelEntries(statsList)
 	if len(allModels) > 0 {
 		sb.WriteString("\n## Model Breakdown\n\n")
-		sb.WriteString("| Provider | Model | Turns | Today | Total | Speed |\n")
-		sb.WriteString("| :--- | :--- | ---: | ---: | ---: | ---: |\n")
+		sb.WriteString("| Provider | Model | Turns | Today | Total | Cost | Speed |\n")
+		sb.WriteString("| :--- | :--- | ---: | ---: | ---: | ---: | ---: |\n")
 
 		for _, entry := range allModels {
 			speedStr := "—"
@@ -122,12 +123,13 @@ func RenderMarkdown(statsList []ProviderStats, opts ...DashboardOptions) string 
 
 			cleanModel := strings.TrimPrefix(entry.Metric.Model, "claude-")
 
-			sb.WriteString(fmt.Sprintf("| %s | %s | %d | %s | %s | %s |\n",
+			sb.WriteString(fmt.Sprintf("| %s | %s | %d | %s | %s | %s | %s |\n",
 				entry.Provider,
 				cleanModel,
 				entry.Metric.Turns,
 				formatNumber(entry.Metric.TokensToday),
 				formatNumber(entry.Metric.TotalTokens),
+				FormatCost(entry.Metric.CostUSD),
 				speedStr,
 			))
 		}
@@ -142,7 +144,7 @@ func RenderCSV(statsList []ProviderStats) (string, error) {
 	writer := csv.NewWriter(&buf)
 
 	if err := writer.Write([]string{
-		"Provider", "Status", "Cooldown", "Sessions", "Model", "Today", "Total", "Speed",
+		"Provider", "Status", "Cooldown", "Sessions", "Model", "Today", "Total", "Cost", "Speed",
 	}); err != nil {
 		return "", err
 	}
@@ -163,6 +165,11 @@ func RenderCSV(statsList []ProviderStats) (string, error) {
 			modelStr = fmt.Sprintf("%s (+%d)", strings.TrimPrefix(modelStr, "claude-"), len(ps.UniqueModels)-1)
 		}
 
+		costStr := ""
+		if ps.TotalCostUSD > 0 {
+			costStr = fmt.Sprintf("%.2f", ps.TotalCostUSD)
+		}
+
 		row := []string{
 			ps.Name,
 			statusStr,
@@ -171,6 +178,7 @@ func RenderCSV(statsList []ProviderStats) (string, error) {
 			modelStr,
 			strconv.FormatInt(ps.TokensToday, 10),
 			strconv.FormatInt(ps.TotalTokens, 10),
+			costStr,
 			speedStr,
 		}
 		if err := writer.Write(row); err != nil {
@@ -184,7 +192,7 @@ func RenderCSV(statsList []ProviderStats) (string, error) {
 		buf.WriteString("\n")
 
 		if err := writer.Write([]string{
-			"Provider", "Model", "Turns", "Today", "Total", "Speed",
+			"Provider", "Model", "Turns", "Today", "Total", "Cost", "Speed",
 		}); err != nil {
 			return "", err
 		}
@@ -195,12 +203,18 @@ func RenderCSV(statsList []ProviderStats) (string, error) {
 				speedStr = fmt.Sprintf("%.1f", entry.Metric.TokensPerSec)
 			}
 
+			costStr := ""
+			if entry.Metric.CostUSD > 0 {
+				costStr = fmt.Sprintf("%.2f", entry.Metric.CostUSD)
+			}
+
 			row := []string{
 				entry.Provider,
 				entry.Metric.Model,
 				strconv.Itoa(entry.Metric.Turns),
 				strconv.FormatInt(entry.Metric.TokensToday, 10),
 				strconv.FormatInt(entry.Metric.TotalTokens, 10),
+				costStr,
 				speedStr,
 			}
 			if err := writer.Write(row); err != nil {

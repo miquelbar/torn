@@ -21,6 +21,7 @@ func sampleStatsList() []ProviderStats {
 			UniqueModels:  []string{"claude-opus-4-6", "claude-sonnet-4-5"},
 			TokensToday:   15400,
 			TotalTokens:   1250000,
+			TotalCostUSD:  12.50,
 			TokensPerSec:  48.5,
 			ModelStats: map[string]provider.ModelMetric{
 				"claude-opus-4-6": {
@@ -28,6 +29,7 @@ func sampleStatsList() []ProviderStats {
 					Turns:        15,
 					TokensToday:  3400,
 					TotalTokens:  250000,
+					CostUSD:      2.50,
 					TokensPerSec: 32.1,
 				},
 				"claude-sonnet-4-5": {
@@ -35,6 +37,7 @@ func sampleStatsList() []ProviderStats {
 					Turns:        50,
 					TokensToday:  12000,
 					TotalTokens:  1000000,
+					CostUSD:      10.00,
 					TokensPerSec: 55.4,
 				},
 			},
@@ -69,21 +72,21 @@ func TestRenderMarkdown(t *testing.T) {
 	}
 
 	// Verify table header
-	if !strings.Contains(md, "| Provider | Status | Cooldown | Sessions | Model | Today | Total | Speed |") {
+	if !strings.Contains(md, "| Provider | Status | Cooldown | Sessions | Model | Today | Total | Cost | Speed |") {
 		t.Errorf("missing main table header in markdown, got:\n%s", md)
 	}
-	if !strings.Contains(md, "| :--- | :--- | :--- | ---: | :--- | ---: | ---: | ---: |") {
+	if !strings.Contains(md, "| :--- | :--- | :--- | ---: | :--- | ---: | ---: | ---: | ---: |") {
 		t.Errorf("missing table separator in markdown, got:\n%s", md)
 	}
 
 	// Verify provider rows
-	if !strings.Contains(md, "| claude | ACTIVE | — | 4 | sonnet-4-5 (+1) | 15,400 | 1,250,000 | 48.5 t/s |") {
+	if !strings.Contains(md, "| claude | ACTIVE | — | 4 | sonnet-4-5 (+1) | 15,400 | 1,250,000 | $12.50 | 48.5 t/s |") {
 		t.Errorf("claude row formatted incorrectly, got:\n%s", md)
 	}
-	if !strings.Contains(md, "| codex | COOLDOWN | 35m | 2 | gpt-5 | 0 | 450,000 | — |") {
+	if !strings.Contains(md, "| codex | COOLDOWN | 35m | 2 | gpt-5 | 0 | 450,000 | — | — |") {
 		t.Errorf("codex row formatted incorrectly, got:\n%s", md)
 	}
-	if !strings.Contains(md, "| vibe | READY | — | 0 | — | 0 | 0 | — |") {
+	if !strings.Contains(md, "| vibe | READY | — | 0 | — | 0 | 0 | — | — |") {
 		t.Errorf("vibe row formatted incorrectly, got:\n%s", md)
 	}
 
@@ -91,10 +94,10 @@ func TestRenderMarkdown(t *testing.T) {
 	if !strings.Contains(md, "## Model Breakdown") {
 		t.Errorf("missing model breakdown header, got:\n%s", md)
 	}
-	if !strings.Contains(md, "| claude | sonnet-4-5 | 50 | 12,000 | 1,000,000 | 55.4 t/s |") {
+	if !strings.Contains(md, "| claude | sonnet-4-5 | 50 | 12,000 | 1,000,000 | $10.00 | 55.4 t/s |") {
 		t.Errorf("sonnet-4-5 breakdown row incorrect, got:\n%s", md)
 	}
-	if !strings.Contains(md, "| claude | opus-4-6 | 15 | 3,400 | 250,000 | 32.1 t/s |") {
+	if !strings.Contains(md, "| claude | opus-4-6 | 15 | 3,400 | 250,000 | $2.50 | 32.1 t/s |") {
 		t.Errorf("opus-4-6 breakdown row incorrect, got:\n%s", md)
 	}
 }

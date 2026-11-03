@@ -269,6 +269,7 @@ func (c *ClaudeProvider) CollectUsage(now time.Time, projectDir ...string) (Usag
 			metrics.TotalTokens += res.totalTokens
 			metrics.TokensThisWeek += res.tokensThisWeek
 			metrics.TokensToday += res.tokensToday
+			metrics.TotalCostUSD += res.totalCostUSD
 			totalValidOutTok += res.validOutputTok
 			totalValidDuration += res.validDuration
 
@@ -333,6 +334,7 @@ type claudeFileStats struct {
 	tokensToday    int64
 	validOutputTok int64
 	validDuration  float64
+	totalCostUSD   float64
 	modelStats     map[string]ModelMetric
 	lastModel      string
 	lastModelTime  time.Time
@@ -379,6 +381,15 @@ func (c *ClaudeProvider) scanFileTokens(path string, fileMod time.Time, startOfD
 				curTime = t
 			} else if t, err := time.Parse(time.RFC3339, base.Timestamp); err == nil {
 				curTime = t
+			}
+		}
+
+		if strings.Contains(string(line), `"cost-state"`) || strings.Contains(string(line), `"totalCostUSD"`) {
+			var costEvt struct {
+				TotalCostUSD float64 `json:"totalCostUSD"`
+			}
+			if err := json.Unmarshal(line, &costEvt); err == nil && costEvt.TotalCostUSD > 0 {
+				res.totalCostUSD = costEvt.TotalCostUSD
 			}
 		}
 

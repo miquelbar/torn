@@ -150,16 +150,17 @@ func (o *OpenCodeProvider) ParseSession(sessionPath string) (*SessionDetails, er
 	escapedID := strings.ReplaceAll(sessionID, "'", "''")
 
 	type sessRow struct {
-		ID              string `json:"id"`
-		Directory       string `json:"directory"`
-		TimeUpdated     int64  `json:"time_updated"`
-		Model           string `json:"model"`
-		TokensInput     int64  `json:"tokens_input"`
-		TokensOutput    int64  `json:"tokens_output"`
-		TokensReasoning int64  `json:"tokens_reasoning"`
+		ID              string  `json:"id"`
+		Directory       string  `json:"directory"`
+		TimeUpdated     int64   `json:"time_updated"`
+		Model           string  `json:"model"`
+		Cost            float64 `json:"cost"`
+		TokensInput     int64   `json:"tokens_input"`
+		TokensOutput    int64   `json:"tokens_output"`
+		TokensReasoning int64   `json:"tokens_reasoning"`
 	}
 	var sRows []sessRow
-	qSess := fmt.Sprintf("SELECT id, directory, time_updated, model, tokens_input, tokens_output, tokens_reasoning FROM session WHERE id = '%s' LIMIT 1;", escapedID)
+	qSess := fmt.Sprintf("SELECT id, directory, time_updated, model, cost, tokens_input, tokens_output, tokens_reasoning FROM session WHERE id = '%s' LIMIT 1;", escapedID)
 	if err := o.queryJSONWithDB(ctx, db, qSess, &sRows); err != nil {
 		return nil, fmt.Errorf("reading opencode session %q: %w", sessionID, err)
 	}
@@ -176,7 +177,8 @@ func (o *OpenCodeProvider) ParseSession(sessionPath string) (*SessionDetails, er
 			CWD:       s.Directory,
 			UpdatedAt: time.UnixMilli(s.TimeUpdated),
 		},
-		Turns: make([]Turn, 0),
+		TotalCostUSD: s.Cost,
+		Turns:        make([]Turn, 0),
 	}
 
 	// Fetch parts grouped by message_id
@@ -362,17 +364,19 @@ func (o *OpenCodeProvider) CollectUsage(now time.Time, projectDir ...string) (Us
 	}
 
 	type sessSummary struct {
-		Count int   `json:"cnt"`
-		Total int64 `json:"tot"`
+		Count int     `json:"cnt"`
+		Total int64   `json:"tot"`
+		Cost  float64 `json:"cost"`
 	}
 	var sessSum []sessSummary
 	qSess := fmt.Sprintf(
-		"SELECT count(*) as cnt, coalesce(sum(tokens_input + tokens_output + tokens_reasoning), 0) as tot FROM session %s;",
+		"SELECT count(*) as cnt, coalesce(sum(tokens_input + tokens_output + tokens_reasoning), 0) as tot, coalesce(sum(cost), 0) as cost FROM session %s;",
 		whereSession,
 	)
 	if err := o.queryJSONWithDB(ctx, db, qSess, &sessSum); err == nil && len(sessSum) > 0 {
 		metrics.TotalSessions = sessSum[0].Count
 		metrics.TotalTokens = sessSum[0].Total
+		metrics.TotalCostUSD = sessSum[0].Cost
 	}
 
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -388,6 +392,7 @@ func (o *OpenCodeProvider) CollectUsage(now time.Time, projectDir ...string) (Us
 		WeekTokens   int64   `json:"week_tokens"`
 		OutTokens    int64   `json:"out_tokens"`
 		DurationSecs float64 `json:"duration_secs"`
+		Cost         float64 `json:"cost"`
 	}
 	var aggs []modelAgg
 	qAgg := fmt.Sprintf(`
@@ -398,7 +403,8 @@ SELECT
     sum(CASE WHEN m.time_created >= %d THEN coalesce(json_extract(m.data, '$.tokens.input'), 0) + coalesce(json_extract(m.data, '$.tokens.output'), 0) + coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) ELSE 0 END) as today_tokens,
     sum(CASE WHEN m.time_created >= %d THEN coalesce(json_extract(m.data, '$.tokens.input'), 0) + coalesce(json_extract(m.data, '$.tokens.output'), 0) + coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) ELSE 0 END) as week_tokens,
     sum(coalesce(json_extract(m.data, '$.tokens.output'), 0) + coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as out_tokens,
-    sum(CASE WHEN json_extract(m.data, '$.time.completed') > json_extract(m.data, '$.time.created') THEN (json_extract(m.data, '$.time.completed') - json_extract(m.data, '$.time.created')) / 1000.0 ELSE 0 END) as duration_secs
+    sum(CASE WHEN json_extract(m.data, '$.time.completed') > json_extract(m.data, '$.time.created') THEN (json_extract(m.data, '$.time.completed') - json_extract(m.data, '$.time.created')) / 1000.0 ELSE 0 END) as duration_secs,
+    sum(coalesce(json_extract(m.data, '$.cost'), 0)) as cost
 FROM message m
 %s json_extract(m.data, '$.role') = 'assistant'
 GROUP BY raw_model;`,
@@ -430,6 +436,7 @@ GROUP BY raw_model;`,
 			cur.TotalTokens += agg.TotalTokens
 			cur.OutputTokens += agg.OutTokens
 			cur.DurationSecs += agg.DurationSecs
+			cur.CostUSD += agg.Cost
 			metrics.ModelStats[model] = cur
 		}
 	}
