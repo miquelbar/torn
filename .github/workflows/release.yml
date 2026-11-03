@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release Binaries
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            goos: linux
+            goarch: amd64
+            binary: torn
+          - os: linux-arm64
+            goos: linux
+            goarch: arm64
+            binary: torn
+          - os: macos
+            goos: darwin
+            goarch: amd64
+            binary: torn
+          - os: macos-arm64
+            goos: darwin
+            goarch: arm64
+            binary: torn
+          - os: windows
+            goos: windows
+            goarch: amd64
+            binary: torn.exe
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Build Binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          BINARY_NAME="torn-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}"
+          
+          echo "Building for ${{ matrix.goos }}/${{ matrix.goarch }}..."
+          go build -ldflags="-s -w" -o "$BINARY_NAME" ./cmd/torn
+          
+          echo "BINARY_OUTPUT=$BINARY_NAME" >> $GITHUB_ENV
+
+      - name: Generate Checksums (MD5 & SHA256)
+        run: |
+          md5sum "${{ env.BINARY_OUTPUT }}" > "${{ env.BINARY_OUTPUT }}.md5"
+          sha256sum "${{ env.BINARY_OUTPUT }}" > "${{ env.BINARY_OUTPUT }}.sha256"
+
+      - name: Upload Artifacts to Temporary Workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            ${{ env.BINARY_OUTPUT }}
+            ${{ env.BINARY_OUTPUT }}.md5
+            ${{ env.BINARY_OUTPUT }}.sha256
+
+  publish:
+    name: Publish GitHub Release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten Artifact Directory
+        run: |
+          mkdir -p release_assets
+          find dist -type f \( -name "torn-*" \) -exec cp {} release_assets/ \;
+          ls -la release_assets
+
+      - name: Generate Release Tag / Version Name
+        id: vars
+        run: |
+          DATE_TAG=$(date +'%Y.%m.%d-%H%M%S')
+          echo "tag=v${DATE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release & Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: "torn Release ${{ steps.vars.outputs.tag }}"
+          body: |
+            Automated release built from commit `${{ github.sha }}`.
+            
+            ### Checksums
+            Binaries are built with Go (CGO_ENABLED=0) stripping debug symbols for minimal footprint. MD5 and SHA256 checksums are attached for every platform.
+          files: release_assets/*
+          draft: false
+          prerelease: false
