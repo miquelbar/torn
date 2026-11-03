@@ -97,7 +97,7 @@ func (s *Store) LoadState(info *project.Info) (*State, error) {
 	return &state, nil
 }
 
-// SaveState atomically writes the State for a project.
+// SaveState atomically writes the State for a project using POSIX-safe temp file rename.
 func (s *Store) SaveState(info *project.Info, state *State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -116,14 +116,37 @@ func (s *Store) SaveState(info *project.Info, state *State) error {
 	}
 
 	statePath := filepath.Join(dir, "state.json")
-	tmpPath := filepath.Join(dir, fmt.Sprintf("state-%d.tmp", time.Now().UnixNano()))
+	tmpFile, err := os.CreateTemp(dir, "state-*.tmp")
+	if err != nil {
+		return fmt.Errorf("creating tmp state file: %w", err)
+	}
+	tmpName := tmpFile.Name()
+	defer func() {
+		if tmpFile != nil {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
 
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+	if err := tmpFile.Chmod(0600); err != nil {
+		return fmt.Errorf("setting tmp state file permissions: %w", err)
+	}
+
+	if _, err := tmpFile.Write(data); err != nil {
 		return fmt.Errorf("writing tmp state file: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, statePath); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("syncing tmp state file: %w", err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("closing tmp state file: %w", err)
+	}
+	tmpFile = nil // Prevent defer from removing after successful close & rename
+
+	if err := os.Rename(tmpName, statePath); err != nil {
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("atomic rename of state file: %w", err)
 	}
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -188,13 +189,14 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 			for _, tc := range step.ToolCalls {
 				toolStr := tc.Name
 				argSummary := extractArgSummary(tc.Args)
-				if argSummary != "" {
-					toolStr = fmt.Sprintf("%s(%s)", tc.Name, argSummary)
+				cleanArg := strings.Trim(strings.TrimSpace(argSummary), `"`)
+				if cleanArg != "" {
+					toolStr = fmt.Sprintf("%s(%q)", tc.Name, cleanArg)
 				}
 				tools = append(tools, toolStr)
 			}
 
-			text := strings.TrimSpace(step.Thinking)
+			text := cleanThinking(step.Thinking)
 			if text != "" || len(tools) > 0 {
 				details.Turns = append(details.Turns, Turn{
 					Role:      "assistant",
@@ -292,14 +294,18 @@ func (a *AgyProvider) scanTranscriptTokens(path string) int64 {
 	return total
 }
 
+var userRequestRegex = regexp.MustCompile(`(?s)<\/?USER_REQUEST>`)
+var truncatedMarkerRegex = regexp.MustCompile(`(?i)<truncated\s+[^>]+>`)
+var additionalMetaRegex = regexp.MustCompile(`(?s)<ADDITIONAL_METADATA>.*?(?:</ADDITIONAL_METADATA>|$)`)
+
 func cleanUserPrompt(s string) string {
-	// Strip <USER_REQUEST> wrappers if present
-	if strings.Contains(s, "<USER_REQUEST>") {
-		start := strings.Index(s, "<USER_REQUEST>") + len("<USER_REQUEST>")
-		end := strings.Index(s, "</USER_REQUEST>")
-		if end > start {
-			return strings.TrimSpace(s[start:end])
-		}
-	}
-	return strings.TrimSpace(s)
+	res := userRequestRegex.ReplaceAllString(s, "")
+	res = additionalMetaRegex.ReplaceAllString(res, "")
+	res = truncatedMarkerRegex.ReplaceAllString(res, "")
+	return strings.TrimSpace(res)
+}
+
+func cleanThinking(s string) string {
+	res := truncatedMarkerRegex.ReplaceAllString(s, "")
+	return strings.TrimSpace(res)
 }

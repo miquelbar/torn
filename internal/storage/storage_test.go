@@ -111,3 +111,58 @@ func TestStoreHistoryAppend(t *testing.T) {
 		t.Fatalf("expected 2 lines in history.jsonl, got %d", len(lines))
 	}
 }
+
+func TestStoreAtomicPermissionsAndConcurrentWrites(t *testing.T) {
+	tempBase := t.TempDir()
+	store, err := New(tempBase)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	info := &project.Info{
+		Path: "/test/project",
+		Hash: "concurrent123456",
+	}
+
+	state := &State{
+		ActiveCLI: "claude",
+		Cooldowns: make(map[string]time.Time),
+	}
+	if err := store.SaveState(info, state); err != nil {
+		t.Fatalf("SaveState failed: %v", err)
+	}
+
+	stateFile := filepath.Join(tempBase, info.Hash, "state.json")
+	stat, err := os.Stat(stateFile)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if stat.Mode().Perm() != 0600 {
+		t.Errorf("expected state.json perm 0600, got %o", stat.Mode().Perm())
+	}
+
+	// Concurrent writes
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(idx int) {
+			s := &State{
+				ActiveCLI:  "claude",
+				RelayCount: idx,
+				Cooldowns:  make(map[string]time.Time),
+			}
+			_ = store.SaveState(info, s)
+			done <- true
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	loaded, err := store.LoadState(info)
+	if err != nil {
+		t.Fatalf("LoadState after concurrent writes failed: %v", err)
+	}
+	if loaded.ActiveCLI != "claude" {
+		t.Errorf("expected ActiveCLI 'claude', got %s", loaded.ActiveCLI)
+	}
+}

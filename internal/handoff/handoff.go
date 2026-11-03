@@ -8,6 +8,7 @@ import (
 
 	"torn/internal/project"
 	"torn/internal/provider"
+	"torn/internal/strutil"
 )
 
 // Options holds flags controlling handoff synthesis.
@@ -326,8 +327,5 @@ func isToolResultText(s string) bool {
 
 func truncateText(text string, maxLen int) string {
 	trimmed := strings.TrimSpace(text)
-	if len(trimmed) <= maxLen {
-		return trimmed
-	}
-	return trimmed[:maxLen] + "... [truncated]"
+	return strutil.Truncate(trimmed, maxLen, "... [truncated]")
 }

@@ -3,6 +3,7 @@ package stats
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"torn/internal/cooldown"
@@ -36,38 +37,43 @@ func NewCollector(reg *provider.Registry, cd *cooldown.Manager) *Collector {
 	}
 }
 
-// Collect returns status and real usage metrics for all registered providers.
+// Collect returns status and real usage metrics for all registered providers concurrently.
 func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats {
 	all := c.registry.All()
-	results := make([]ProviderStats, 0, len(all))
+	results := make([]ProviderStats, len(all))
+	var wg sync.WaitGroup
 
-	for _, p := range all {
-		status, remaining := c.cooldown.GetStatus(p.Name(), state, now)
+	for i, p := range all {
+		wg.Add(1)
+		go func(idx int, prov provider.Provider) {
+			defer wg.Done()
 
-		usage, _ := p.CollectUsage(now)
+			status, remaining := c.cooldown.GetStatus(prov.Name(), state, now)
+			usage, _ := prov.CollectUsage(now)
 
-		burnRate := 0.0
-		if usage.TokensToday > 0 {
-			midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-			minsToday := now.Sub(midnight).Minutes()
-			if minsToday > 0 {
-				burnRate = float64(usage.TokensToday) / minsToday
+			burnRate := 0.0
+			if usage.TokensToday > 0 {
+				midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+				minsToday := now.Sub(midnight).Minutes()
+				if minsToday > 0 {
+					burnRate = float64(usage.TokensToday) / minsToday
+				}
 			}
-		}
 
-		ps := ProviderStats{
-			Name:           p.Name(),
-			Status:         status,
-			CooldownTime:   remaining,
-			SessionsCount:  usage.TotalSessions,
-			TokensToday:    usage.TokensToday,
-			TokensThisWeek: usage.TokensThisWeek,
-			TotalTokens:    usage.TotalTokens,
-			BurnRatePerMin: burnRate,
-		}
-		results = append(results, ps)
+			results[idx] = ProviderStats{
+				Name:           prov.Name(),
+				Status:         status,
+				CooldownTime:   remaining,
+				SessionsCount:  usage.TotalSessions,
+				TokensToday:    usage.TokensToday,
+				TokensThisWeek: usage.TokensThisWeek,
+				TotalTokens:    usage.TotalTokens,
+				BurnRatePerMin: burnRate,
+			}
+		}(i, p)
 	}
 
+	wg.Wait()
 	return results
 }
 

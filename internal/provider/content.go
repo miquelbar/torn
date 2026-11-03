@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"torn/internal/strutil"
 )
 
 // ExtractedContent represents the parsed text and tool interactions from a turn.
@@ -111,10 +113,7 @@ func extractArgSummary(rawArgs any) string {
 	switch a := rawArgs.(type) {
 	case string:
 		if err := json.Unmarshal([]byte(a), &m); err != nil {
-			if len(a) > 50 {
-				return a[:50] + "..."
-			}
-			return a
+			return strutil.Truncate(strings.TrimSpace(a), 50, "...")
 		}
 	case map[string]any:
 		m = a
@@ -124,13 +123,18 @@ func extractArgSummary(rawArgs any) string {
 		return ""
 	}
 
-	// Prioritize common paths and command parameters
-	for _, key := range []string{"file_path", "filePath", "path", "Path", "command", "CommandLine", "cmd", "pattern"} {
-		if val, ok := m[key].(string); ok && val != "" {
-			if len(val) > 60 {
-				return val[:60] + "..."
-			}
-			return val
+	// Prioritize common paths, targets, commands, and summaries
+	keys := []string{
+		"TargetFile", "target_file", "AbsolutePath", "absolute_path",
+		"DirectoryPath", "directory_path", "file_path", "filePath",
+		"path", "Path", "file", "File", "CommandLine", "command",
+		"cmd", "query", "Query", "pattern", "Pattern", "Url", "url",
+		"toolSummary",
+	}
+
+	for _, key := range keys {
+		if val, ok := m[key].(string); ok && strings.TrimSpace(val) != "" {
+			return strutil.Truncate(strings.TrimSpace(val), 60, "...")
 		}
 	}
 

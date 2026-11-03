@@ -2,6 +2,7 @@ package project
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Info represents metadata for a target project workspace.
@@ -22,9 +24,12 @@ type Info struct {
 // GitRunner defines the capability to execute git commands in a directory.
 type GitRunner func(dir string, args ...string) (string, error)
 
-// DefaultGitRunner executes native git commands.
+// DefaultGitRunner executes native git commands with a 2-second timeout.
 func DefaultGitRunner(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

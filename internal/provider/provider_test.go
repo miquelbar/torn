@@ -233,6 +233,66 @@ func TestAgyTranscriptParser(t *testing.T) {
 	}
 }
 
+func TestAgyToolExtractionAndMarkerCleaning(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewAgy(tempDir)
+
+	workspace := "/Users/test/Projects/agy-target"
+	convID := "conv-test-tools"
+
+	// 1. Setup session directory
+	sessionDir := filepath.Join(tempDir, "conversations", convID)
+	_ = os.MkdirAll(sessionDir, 0755)
+	sessMeta := map[string]any{
+		"session_id":     convID,
+		"workspace_path": workspace,
+		"status":         "active",
+		"updated_at":     time.Now().Format(time.RFC3339),
+	}
+	rawMeta, _ := json.Marshal(sessMeta)
+	_ = os.WriteFile(filepath.Join(sessionDir, "session.json"), rawMeta, 0644)
+
+	brainLogsDir := filepath.Join(tempDir, "brain", convID, ".system_generated", "logs")
+	_ = os.MkdirAll(brainLogsDir, 0755)
+
+	transcriptContent := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nRefactor auth logic\n<truncated 500 bytes>\n</USER_REQUEST>"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","thinking":"Examining the code <truncated 1200 bytes> carefully","input_tokens":100,"output_tokens":50,"tool_calls":[{"name":"write_to_file","args":{"TargetFile":"internal/auth/handler.go"}},{"name":"view_file","args":{"AbsolutePath":"/Users/test/Projects/agy-target/main.go"}}]}
+`
+	transcriptPath := filepath.Join(brainLogsDir, "transcript.jsonl")
+	_ = os.WriteFile(transcriptPath, []byte(transcriptContent), 0644)
+
+	details, err := p.ParseSession(transcriptPath)
+	if err != nil {
+		t.Fatalf("ParseSession failed: %v", err)
+	}
+
+	if details.LastUserMessage != "Refactor auth logic" {
+		t.Errorf("expected clean user message, got %q", details.LastUserMessage)
+	}
+
+	if len(details.Turns) < 2 {
+		t.Fatalf("expected at least 2 turns, got %d", len(details.Turns))
+	}
+
+	assistantTurn := details.Turns[1]
+	if strings.Contains(assistantTurn.Text, "<truncated") {
+		t.Errorf("expected thinking text without truncated markers, got %q", assistantTurn.Text)
+	}
+
+	expectedTools := []string{
+		`write_to_file("internal/auth/handler.go")`,
+		`view_file("/Users/test/Projects/agy-target/main.go")`,
+	}
+	if len(assistantTurn.Tools) != len(expectedTools) {
+		t.Fatalf("expected %d tools, got %d: %v", len(expectedTools), len(assistantTurn.Tools), assistantTurn.Tools)
+	}
+	for i, expected := range expectedTools {
+		if assistantTurn.Tools[i] != expected {
+			t.Errorf("tool[%d]: expected %q, got %q", i, expected, assistantTurn.Tools[i])
+		}
+	}
+}
+
 func TestExtractResetTime(t *testing.T) {
 	loc, _ := time.LoadLocation("Europe/Madrid")
 	now := time.Date(2026, 11, 3, 9, 0, 0, 0, loc)

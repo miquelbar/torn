@@ -3,9 +3,11 @@ package search
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"torn/internal/provider"
+	"torn/internal/strutil"
 )
 
 // MatchResult represents a matched session containing the query term.
@@ -34,51 +36,67 @@ func (e *Engine) Find(cwd string, query string) ([]MatchResult, error) {
 		return nil, fmt.Errorf("search query cannot be empty")
 	}
 
-	var results []MatchResult
+	providers := e.registry.All()
+	var (
+		mu      sync.Mutex
+		results []MatchResult
+		wg      sync.WaitGroup
+	)
 
-	for _, p := range e.registry.All() {
-		sess, err := p.DetectLatestSession(cwd)
-		if err != nil || sess == nil {
-			continue
-		}
+	for _, p := range providers {
+		wg.Add(1)
+		go func(prov provider.Provider) {
+			defer wg.Done()
 
-		details, err := p.ParseSession(sess.Path)
-		if err != nil || details == nil {
-			continue
-		}
-
-		for _, turn := range details.Turns {
-			turnLower := strings.ToLower(turn.Text)
-			if idx := strings.Index(turnLower, cleanQuery); idx != -1 {
-				// Extract snippet around match
-				start := idx - 40
-				if start < 0 {
-					start = 0
-				}
-				end := idx + len(cleanQuery) + 60
-				if end > len(turn.Text) {
-					end = len(turn.Text)
-				}
-
-				snippet := strings.ReplaceAll(turn.Text[start:end], "\n", " ")
-				if start > 0 {
-					snippet = "..." + snippet
-				}
-				if end < len(turn.Text) {
-					snippet = snippet + "..."
-				}
-
-				results = append(results, MatchResult{
-					Provider:  p.Name(),
-					SessionID: sess.ID,
-					Timestamp: sess.UpdatedAt,
-					Turns:     len(details.Turns),
-					Snippet:   strings.TrimSpace(snippet),
-				})
-				break
+			sess, err := prov.DetectLatestSession(cwd)
+			if err != nil || sess == nil {
+				return
 			}
-		}
+
+			details, err := prov.ParseSession(sess.Path)
+			if err != nil || details == nil {
+				return
+			}
+
+			for _, turn := range details.Turns {
+				turnLower := strings.ToLower(turn.Text)
+				if idx := strings.Index(turnLower, cleanQuery); idx != -1 {
+					// Extract snippet around match safely avoiding split runes
+					start := idx - 40
+					if start < 0 {
+						start = 0
+					}
+					end := idx + len(cleanQuery) + 60
+					if end > len(turn.Text) {
+						end = len(turn.Text)
+					}
+
+					snippet := strutil.SafeSnippet(turn.Text, start, end)
+					snippet = strings.ReplaceAll(snippet, "\n", " ")
+					if start > 0 {
+						snippet = "..." + snippet
+					}
+					if end < len(turn.Text) {
+						snippet = snippet + "..."
+					}
+
+					res := MatchResult{
+						Provider:  prov.Name(),
+						SessionID: sess.ID,
+						Timestamp: sess.UpdatedAt,
+						Turns:     len(details.Turns),
+						Snippet:   strings.TrimSpace(snippet),
+					}
+
+					mu.Lock()
+					results = append(results, res)
+					mu.Unlock()
+					break
+				}
+			}
+		}(p)
 	}
 
+	wg.Wait()
 	return results, nil
 }
