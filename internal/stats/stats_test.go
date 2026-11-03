@@ -33,8 +33,8 @@ func TestCollectAndRenderDashboard(t *testing.T) {
 	if !strings.Contains(output, "TORN HYPERVISOR STATS") {
 		t.Errorf("output missing title: %s", output)
 	}
-	if !strings.Contains(output, "TOKENS (TODAY / TOTAL)") {
-		t.Errorf("output missing TOKENS header: %s", output)
+	if !strings.Contains(output, "TODAY") || !strings.Contains(output, "TOTAL") {
+		t.Errorf("output missing TODAY / TOTAL headers: %s", output)
 	}
 	if !strings.Contains(output, "● ACTIVE") {
 		t.Errorf("output missing ACTIVE status for claude: %s", output)

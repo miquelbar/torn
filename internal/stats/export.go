@@ -60,7 +60,7 @@ func RenderMarkdown(statsList []ProviderStats) string {
 	var sb strings.Builder
 
 	sb.WriteString("# Torn Hypervisor Stats\n\n")
-	sb.WriteString("| Provider | Status | Cooldown | Sessions | Model | Tokens Today | Total Tokens | Speed |\n")
+	sb.WriteString("| Provider | Status | Cooldown | Sessions | Model | Today | Total | Speed |\n")
 	sb.WriteString("| :--- | :--- | :--- | ---: | :--- | ---: | ---: | ---: |\n")
 
 	for _, ps := range statsList {
@@ -102,7 +102,7 @@ func RenderMarkdown(statsList []ProviderStats) string {
 	allModels := sortedModelEntries(statsList)
 	if len(allModels) > 0 {
 		sb.WriteString("\n## Model Breakdown\n\n")
-		sb.WriteString("| Provider | Model | Turns | Tokens Today | Total Tokens | Speed |\n")
+		sb.WriteString("| Provider | Model | Turns | Today | Total | Speed |\n")
 		sb.WriteString("| :--- | :--- | ---: | ---: | ---: | ---: |\n")
 
 		for _, entry := range allModels {
@@ -133,7 +133,7 @@ func RenderCSV(statsList []ProviderStats) (string, error) {
 	writer := csv.NewWriter(&buf)
 
 	if err := writer.Write([]string{
-		"Provider", "Status", "Cooldown", "Sessions", "Model", "TokensToday", "TotalTokens", "SpeedTokensPerSec",
+		"Provider", "Status", "Cooldown", "Sessions", "Model", "Today", "Total", "Speed",
 	}); err != nil {
 		return "", err
 	}
@@ -175,7 +175,7 @@ func RenderCSV(statsList []ProviderStats) (string, error) {
 		buf.WriteString("\n")
 
 		if err := writer.Write([]string{
-			"Provider", "Model", "Turns", "TokensToday", "TotalTokens", "SpeedTokensPerSec",
+			"Provider", "Model", "Turns", "Today", "Total", "Speed",
 		}); err != nil {
 			return "", err
 		}

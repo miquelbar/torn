@@ -91,12 +91,12 @@ func (c *Collector) Collect(state *storage.State, now time.Time) []ProviderStats
 func RenderDashboard(statsList []ProviderStats) string {
 	var sb strings.Builder
 
-	divider := "\033[90m" + strings.Repeat("─", 94) + "\033[0m\n"
+	divider := "\033[90m" + strings.Repeat("─", 108) + "\033[0m\n"
 
 	sb.WriteString("\n\033[1mTORN HYPERVISOR STATS\033[0m\n")
 	sb.WriteString(divider)
-	sb.WriteString(fmt.Sprintf("\033[90m%-10s %-12s %-10s %-9s %-22s %-22s %-9s\033[0m\n",
-		"PROVIDER", "STATUS", "COOLDOWN", "SESSIONS", "MODEL", "TOKENS (TODAY / TOTAL)", "SPEED"))
+	sb.WriteString(fmt.Sprintf("\033[90m%-10s  %-12s  %9s  %9s  %-24s  %10s  %10s  %10s\033[0m\n",
+		"PROVIDER", "STATUS", "COOLDOWN", "SESSIONS", "MODEL", "TODAY", "TOTAL", "SPEED"))
 	sb.WriteString(divider)
 
 	type modelEntry struct {
@@ -108,34 +108,34 @@ func RenderDashboard(statsList []ProviderStats) string {
 	for _, ps := range statsList {
 		statusCol := formatStatus(ps.Status, 12)
 
-		cooldownCol := "\033[90m—         \033[0m"
+		var cooldownCol string
 		if ps.CooldownTime > 0 {
 			durStr := cooldown.FormatDuration(ps.CooldownTime)
-			cooldownCol = fmt.Sprintf("\033[31m%-10s\033[0m", durStr)
+			cooldownCol = padLeftColor(durStr, 9, "\033[31m")
+		} else {
+			cooldownCol = padLeft("—", 9)
 		}
 
-		sessionsCol := fmt.Sprintf("%-9s", FormatCompactNumber(int64(ps.SessionsCount)))
+		sessionsCol := padLeft(FormatCompactNumber(int64(ps.SessionsCount)), 9)
+		modelCol := padRight(formatCompactModel(ps.LastModel, len(ps.UniqueModels)-1, 24), 24)
+		todayCol := padLeft(FormatCompactNumber(ps.TokensToday), 10)
+		totalCol := padLeft(FormatCompactNumber(ps.TotalTokens), 10)
 
-		modelName := formatCompactModel(ps.LastModel, len(ps.UniqueModels)-1, 20)
-		modelCol := fmt.Sprintf("%-22s", modelName)
-
-		todayStr := FormatCompactNumber(ps.TokensToday)
-		totalStr := FormatCompactNumber(ps.TotalTokens)
-		tokensStr := fmt.Sprintf("%s / %s", todayStr, totalStr)
-		tokensCol := fmt.Sprintf("%-22s", tokensStr)
-
-		speedCol := "\033[90m—        \033[0m"
+		var speedCol string
 		if ps.TokensPerSec > 0 {
-			speedCol = fmt.Sprintf("%-9s", fmt.Sprintf("%.1f t/s", ps.TokensPerSec))
+			speedCol = padLeft(fmt.Sprintf("%.1f t/s", ps.TokensPerSec), 10)
+		} else {
+			speedCol = padLeft("—", 10)
 		}
 
-		sb.WriteString(fmt.Sprintf("\033[1m%-10s\033[0m %s %s %s %s %s %s\n",
+		sb.WriteString(fmt.Sprintf("\033[1m%-10s\033[0m  %s  %s  %s  %s  %s  %s  %s\n",
 			ps.Name,
 			statusCol,
 			cooldownCol,
 			sessionsCol,
 			modelCol,
-			tokensCol,
+			todayCol,
+			totalCol,
 			speedCol,
 		))
 
@@ -156,36 +156,73 @@ func RenderDashboard(statsList []ProviderStats) string {
 			return allModels[i].Metric.Turns > allModels[j].Metric.Turns
 		})
 
-		subDivider := "\033[90m" + strings.Repeat("─", 80) + "\033[0m\n"
-
 		sb.WriteString("\n\033[1mMODEL BREAKDOWN\033[0m\n")
-		sb.WriteString(subDivider)
-		sb.WriteString(fmt.Sprintf("\033[90m%-10s %-24s %-9s %-12s %-12s %-9s\033[0m\n",
+		sb.WriteString(divider)
+		sb.WriteString(fmt.Sprintf("\033[90m%-10s  %-47s  %9s  %10s  %10s  %10s\033[0m\n",
 			"PROVIDER", "MODEL", "TURNS", "TODAY", "TOTAL", "SPEED"))
-		sb.WriteString(subDivider)
+		sb.WriteString(divider)
 
 		for _, entry := range allModels {
-			speed := "\033[90m—        \033[0m"
+			var speedCol string
 			if entry.Metric.TokensPerSec > 0 {
-				speed = fmt.Sprintf("%-9s", fmt.Sprintf("%.1f t/s", entry.Metric.TokensPerSec))
+				speedCol = padLeft(fmt.Sprintf("%.1f t/s", entry.Metric.TokensPerSec), 10)
+			} else {
+				speedCol = padLeft("—", 10)
 			}
 
 			modelName := strings.TrimPrefix(entry.Metric.Model, "claude-")
-			modelName = strutil.Truncate(modelName, 23, "")
+			modelName = strutil.Truncate(modelName, 47, "")
+			modelCol := padRight(modelName, 47)
 
-			sb.WriteString(fmt.Sprintf("\033[1m%-10s\033[0m %-24s %-9s %-12s %-12s %s\n",
+			turnsCol := padLeft(FormatCompactNumber(int64(entry.Metric.Turns)), 9)
+			todayCol := padLeft(FormatCompactNumber(entry.Metric.TokensToday), 10)
+			totalCol := padLeft(FormatCompactNumber(entry.Metric.TotalTokens), 10)
+
+			sb.WriteString(fmt.Sprintf("\033[1m%-10s\033[0m  %s  %s  %s  %s  %s\n",
 				entry.Provider,
-				modelName,
-				FormatCompactNumber(int64(entry.Metric.Turns)),
-				FormatCompactNumber(entry.Metric.TokensToday),
-				FormatCompactNumber(entry.Metric.TotalTokens),
-				speed,
+				modelCol,
+				turnsCol,
+				todayCol,
+				totalCol,
+				speedCol,
 			))
 		}
-		sb.WriteString(subDivider)
+		sb.WriteString(divider)
 	}
 
 	return sb.String()
+}
+
+func padRight(s string, width int) string {
+	r := []rune(s)
+	if len(r) >= width {
+		return string(r[:width])
+	}
+	return s + strings.Repeat(" ", width-len(r))
+}
+
+func padLeft(s string, width int) string {
+	r := []rune(s)
+	if len(r) >= width {
+		return string(r[:width])
+	}
+	return strings.Repeat(" ", width-len(r)) + s
+}
+
+func padLeftColor(text string, width int, colorCode string) string {
+	r := []rune(text)
+	textLen := len(r)
+	if textLen >= width {
+		if colorCode != "" {
+			return colorCode + text + "\033[0m"
+		}
+		return text
+	}
+	spaces := strings.Repeat(" ", width-textLen)
+	if colorCode != "" {
+		return spaces + colorCode + text + "\033[0m"
+	}
+	return spaces + text
 }
 
 func formatStatus(st cooldown.Status, width int) string {

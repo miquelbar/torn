@@ -69,7 +69,7 @@ func TestRenderMarkdown(t *testing.T) {
 	}
 
 	// Verify table header
-	if !strings.Contains(md, "| Provider | Status | Cooldown | Sessions | Model | Tokens Today | Total Tokens | Speed |") {
+	if !strings.Contains(md, "| Provider | Status | Cooldown | Sessions | Model | Today | Total | Speed |") {
 		t.Errorf("missing main table header in markdown, got:\n%s", md)
 	}
 	if !strings.Contains(md, "| :--- | :--- | :--- | ---: | :--- | ---: | ---: | ---: |") {
