@@ -31,34 +31,44 @@ func TestCollectAndRenderDashboard(t *testing.T) {
 	output := RenderDashboard(statsList)
 
 	if !strings.Contains(output, "TORN HYPERVISOR STATS") {
-		t.Errorf("output missing title")
+		t.Errorf("output missing title: %s", output)
 	}
-	if !strings.Contains(output, "TOTAL TOKENS") {
-		t.Errorf("output missing TOTAL TOKENS header")
+	if !strings.Contains(output, "TOKENS (TODAY / TOTAL)") {
+		t.Errorf("output missing TOKENS header: %s", output)
 	}
-	if !strings.Contains(output, "🟡 ACTIVE") {
+	if !strings.Contains(output, "● ACTIVE") {
 		t.Errorf("output missing ACTIVE status for claude: %s", output)
 	}
-	if !strings.Contains(output, "🔴 COOLDOWN") {
+	if !strings.Contains(output, "● COOLDOWN") {
 		t.Errorf("output missing COOLDOWN status for codex: %s", output)
 	}
-	if !strings.Contains(output, "🟢 READY") {
+	if !strings.Contains(output, "● READY") {
 		t.Errorf("output missing READY status for available providers: %s", output)
 	}
 }
 
-func TestFormatNumber(t *testing.T) {
-	if formatNumber(0) != "--" {
-		t.Errorf("expected '--', got %q", formatNumber(0))
+func TestFormatCompactNumber(t *testing.T) {
+	tests := []struct {
+		input    int64
+		expected string
+	}{
+		{0, "—"},
+		{-10, "—"},
+		{553, "553"},
+		{1000, "1K"},
+		{2500, "2.5K"},
+		{100000, "100K"},
+		{1200000, "1.2M"},
+		{93485077, "93.5M"},
+		{119500000, "119.5M"},
+		{1849939873, "1.8B"},
 	}
-	if formatNumber(999) != "999" {
-		t.Errorf("expected '999', got %q", formatNumber(999))
-	}
-	if formatNumber(1000) != "1,000" {
-		t.Errorf("expected '1,000', got %q", formatNumber(1000))
-	}
-	if formatNumber(1849939873) != "1,849,939,873" {
-		t.Errorf("expected '1,849,939,873', got %q", formatNumber(1849939873))
+
+	for _, tc := range tests {
+		got := FormatCompactNumber(tc.input)
+		if got != tc.expected {
+			t.Errorf("FormatCompactNumber(%d) = %q, want %q", tc.input, got, tc.expected)
+		}
 	}
 }
 
@@ -94,16 +104,16 @@ func TestRenderDashboardWithModelsAndSpeed(t *testing.T) {
 
 	output := RenderDashboard(statsList)
 
-	if !strings.Contains(output, "claude-sonnet-4-5 (+1)") {
+	if !strings.Contains(output, "sonnet-4-5 (+1)") {
 		t.Errorf("expected model with (+1) suffix, got:\n%s", output)
 	}
-	if !strings.Contains(output, "52.4 tok/s") {
-		t.Errorf("expected 52.4 tok/s speed in main table, got:\n%s", output)
+	if !strings.Contains(output, "52.4 t/s") {
+		t.Errorf("expected 52.4 t/s speed in main table, got:\n%s", output)
 	}
 	if !strings.Contains(output, "MODEL BREAKDOWN") {
 		t.Errorf("expected MODEL BREAKDOWN sub-table, got:\n%s", output)
 	}
-	if !strings.Contains(output, "claude-sonnet-4-5") || !strings.Contains(output, "claude-opus-4-6") {
+	if !strings.Contains(output, "sonnet-4-5") || !strings.Contains(output, "opus-4-6") {
 		t.Errorf("expected both models in breakdown table, got:\n%s", output)
 	}
 }
