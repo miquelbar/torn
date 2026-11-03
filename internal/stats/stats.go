@@ -94,7 +94,7 @@ func (c *Collector) Collect(state *storage.State, now time.Time, projectPath ...
 	return results
 }
 
-// RenderDashboard prints an ANSI formatted dashboard of provider statuses and model breakdown.
+// RenderDashboard prints an ANSI formatted dashboard of provider statuses with a hierarchical model tree.
 func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string {
 	var sb strings.Builder
 
@@ -111,15 +111,9 @@ func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string
 
 	sb.WriteString("\n\033[1m" + title + "\033[0m\n")
 	sb.WriteString(divider)
-	sb.WriteString(fmt.Sprintf("\033[90m%-10s  %-12s  %9s  %9s  %-24s  %10s  %10s  %10s\033[0m\n",
-		"PROVIDER", "STATUS", "COOLDOWN", "SESSIONS", "MODEL", "TODAY", "TOTAL", "SPEED"))
+	sb.WriteString(fmt.Sprintf("\033[90m%-36s  %-12s  %9s  %9s  %10s  %10s  %10s\033[0m\n",
+		"PROVIDER / MODEL", "STATUS", "COOLDOWN", "SESSIONS", "TODAY", "TOTAL", "SPEED"))
 	sb.WriteString(divider)
-
-	type modelEntry struct {
-		Provider string
-		Metric   provider.ModelMetric
-	}
-	var allModels []modelEntry
 
 	for _, ps := range statsList {
 		statusCol := formatStatus(ps.Status, 12)
@@ -133,7 +127,6 @@ func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string
 		}
 
 		sessionsCol := padLeft(FormatCompactNumber(int64(ps.SessionsCount)), 9)
-		modelCol := padRight(formatCompactModel(ps.LastModel, len(ps.UniqueModels)-1, 24), 24)
 		todayCol := padLeft(FormatCompactNumber(ps.TokensToday), 10)
 		totalCol := padLeft(FormatCompactNumber(ps.TotalTokens), 10)
 
@@ -144,67 +137,65 @@ func RenderDashboard(statsList []ProviderStats, opts ...DashboardOptions) string
 			speedCol = padLeft("—", 10)
 		}
 
-		sb.WriteString(fmt.Sprintf("\033[1m%-10s\033[0m  %s  %s  %s  %s  %s  %s  %s\n",
+		sb.WriteString(fmt.Sprintf("\033[1m%-36s\033[0m  %s  %s  %s  %s  %s  %s\n",
 			ps.Name,
 			statusCol,
 			cooldownCol,
 			sessionsCol,
-			modelCol,
 			todayCol,
 			totalCol,
 			speedCol,
 		))
 
-		for _, m := range ps.ModelStats {
-			allModels = append(allModels, modelEntry{
-				Provider: ps.Name,
-				Metric:   m,
+		// Render child model rows in a hierarchical tree
+		if len(ps.ModelStats) > 0 {
+			var models []provider.ModelMetric
+			for _, m := range ps.ModelStats {
+				models = append(models, m)
+			}
+			sort.Slice(models, func(i, j int) bool {
+				if models[i].TotalTokens != models[j].TotalTokens {
+					return models[i].TotalTokens > models[j].TotalTokens
+				}
+				return models[i].Turns > models[j].Turns
 			})
+
+			for i, m := range models {
+				treeGlyph := "├─"
+				if i == len(models)-1 {
+					treeGlyph = "└─"
+				}
+
+				modelName := strings.TrimPrefix(m.Model, "claude-")
+				modelName = strutil.Truncate(modelName, 31, "")
+				modelLabel := fmt.Sprintf("  \033[90m%s\033[0m %s", treeGlyph, padRight(modelName, 31))
+
+				mStatusCol := strings.Repeat(" ", 12)
+				mCooldownCol := strings.Repeat(" ", 9)
+				mTurnsCol := padLeft(FormatCompactNumber(int64(m.Turns)), 9)
+				mTodayCol := padLeft(FormatCompactNumber(m.TokensToday), 10)
+				mTotalCol := padLeft(FormatCompactNumber(m.TotalTokens), 10)
+
+				var mSpeedCol string
+				if m.TokensPerSec > 0 {
+					mSpeedCol = padLeft(fmt.Sprintf("%.1f t/s", m.TokensPerSec), 10)
+				} else {
+					mSpeedCol = padLeft("—", 10)
+				}
+
+				sb.WriteString(fmt.Sprintf("%s  %s  %s  %s  %s  %s  %s\n",
+					modelLabel,
+					mStatusCol,
+					mCooldownCol,
+					mTurnsCol,
+					mTodayCol,
+					mTotalCol,
+					mSpeedCol,
+				))
+			}
 		}
 	}
 	sb.WriteString(divider)
-
-	if len(allModels) > 0 {
-		sort.Slice(allModels, func(i, j int) bool {
-			if allModels[i].Metric.TotalTokens != allModels[j].Metric.TotalTokens {
-				return allModels[i].Metric.TotalTokens > allModels[j].Metric.TotalTokens
-			}
-			return allModels[i].Metric.Turns > allModels[j].Metric.Turns
-		})
-
-		sb.WriteString("\n\033[1mMODEL BREAKDOWN\033[0m\n")
-		sb.WriteString(divider)
-		sb.WriteString(fmt.Sprintf("\033[90m%-10s  %-47s  %9s  %10s  %10s  %10s\033[0m\n",
-			"PROVIDER", "MODEL", "TURNS", "TODAY", "TOTAL", "SPEED"))
-		sb.WriteString(divider)
-
-		for _, entry := range allModels {
-			var speedCol string
-			if entry.Metric.TokensPerSec > 0 {
-				speedCol = padLeft(fmt.Sprintf("%.1f t/s", entry.Metric.TokensPerSec), 10)
-			} else {
-				speedCol = padLeft("—", 10)
-			}
-
-			modelName := strings.TrimPrefix(entry.Metric.Model, "claude-")
-			modelName = strutil.Truncate(modelName, 47, "")
-			modelCol := padRight(modelName, 47)
-
-			turnsCol := padLeft(FormatCompactNumber(int64(entry.Metric.Turns)), 9)
-			todayCol := padLeft(FormatCompactNumber(entry.Metric.TokensToday), 10)
-			totalCol := padLeft(FormatCompactNumber(entry.Metric.TotalTokens), 10)
-
-			sb.WriteString(fmt.Sprintf("\033[1m%-10s\033[0m  %s  %s  %s  %s  %s\n",
-				entry.Provider,
-				modelCol,
-				turnsCol,
-				todayCol,
-				totalCol,
-				speedCol,
-			))
-		}
-		sb.WriteString(divider)
-	}
 
 	return sb.String()
 }

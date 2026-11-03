@@ -104,16 +104,16 @@ func TestRenderDashboardWithModelsAndSpeed(t *testing.T) {
 
 	output := RenderDashboard(statsList)
 
-	if !strings.Contains(output, "sonnet-4-5 (+1)") {
-		t.Errorf("expected model with (+1) suffix, got:\n%s", output)
+	if !strings.Contains(output, "sonnet-4-5") || !strings.Contains(output, "opus-4-6") {
+		t.Errorf("expected both models in hierarchical tree, got:\n%s", output)
+	}
+	if !strings.Contains(output, "├─") || !strings.Contains(output, "└─") {
+		t.Errorf("expected tree branch glyphs, got:\n%s", output)
 	}
 	if !strings.Contains(output, "52.4 t/s") {
-		t.Errorf("expected 52.4 t/s speed in main table, got:\n%s", output)
+		t.Errorf("expected 52.4 t/s speed in provider row, got:\n%s", output)
 	}
-	if !strings.Contains(output, "MODEL BREAKDOWN") {
-		t.Errorf("expected MODEL BREAKDOWN sub-table, got:\n%s", output)
-	}
-	if !strings.Contains(output, "sonnet-4-5") || !strings.Contains(output, "opus-4-6") {
-		t.Errorf("expected both models in breakdown table, got:\n%s", output)
+	if !strings.Contains(output, "58.2 t/s") || !strings.Contains(output, "35.0 t/s") {
+		t.Errorf("expected individual model speeds, got:\n%s", output)
 	}
 }
