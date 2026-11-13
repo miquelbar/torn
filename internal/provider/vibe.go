@@ -47,6 +47,27 @@ type vibeIndexEntry struct {
 }
 
 func (v *VibeProvider) DetectLatestSession(targetCwd string) (*Session, error) {
+	legacy, legacyErr := v.detectLegacyLatestSession(targetCwd)
+	unified, unifiedErr := v.DetectLatestUnifiedSession(targetCwd)
+
+	switch {
+	case legacy == nil && unified == nil:
+		if legacyErr != nil {
+			return nil, legacyErr
+		}
+		return nil, unifiedErr
+	case unified == nil:
+		return legacy, nil
+	case legacy == nil:
+		return unified, nil
+	case unified.UpdatedAt.After(legacy.UpdatedAt):
+		return unified, nil
+	default:
+		return legacy, nil
+	}
+}
+
+func (v *VibeProvider) detectLegacyLatestSession(targetCwd string) (*Session, error) {
 	indexPath := filepath.Join(v.baseDir, "logs", "session", ".session_index.json")
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
@@ -104,6 +125,10 @@ func (v *VibeProvider) DetectLatestSession(targetCwd string) (*Session, error) {
 }
 
 func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error) {
+	if IsVibeUnifiedSession(sessionPath) {
+		return v.parseUnifiedSession(sessionPath)
+	}
+
 	stat, err := os.Stat(sessionPath)
 	if err != nil {
 		return nil, fmt.Errorf("accessing vibe session %q: %w", sessionPath, err)
@@ -226,7 +251,14 @@ func (v *VibeProvider) ParseSession(sessionPath string) (*SessionDetails, error)
 	return details, scanner.Err()
 }
 
+// CollectUsage aggregates telemetry across legacy and unified vibe stores.
 func (v *VibeProvider) CollectUsage(now time.Time, projectDir ...string) (UsageMetrics, error) {
+	legacy, _ := v.collectLegacyUsage(now, projectDir...)
+	unified := v.collectUnifiedUsage(now, projectDir...)
+	return mergeUsageMetrics(legacy, unified), nil
+}
+
+func (v *VibeProvider) collectLegacyUsage(now time.Time, projectDir ...string) (UsageMetrics, error) {
 	metrics := UsageMetrics{
 		ModelStats: make(map[string]ModelMetric),
 	}
