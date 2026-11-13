@@ -227,17 +227,34 @@ func (a *App) selectTargetInteractively() (string, bool, error) {
 	items := make([]ui.PickerItem, 0, 4)
 	stateChanged := false
 
+	// latestSessions tracks the most recent on-disk session per provider to
+	// preselect the provider currently most active in this project when torn
+	// has no relay state for it yet.
+	latestSessions := make(map[string]*provider.Session, 4)
+	latestTimes := make(map[string]time.Time, 4)
+	for _, p := range a.Registry.All() {
+		if sess, sessErr := p.DetectLatestSession(proj.Path); sessErr == nil {
+			latestSessions[p.Name()] = sess
+			latestTimes[p.Name()] = sess.UpdatedAt
+		}
+	}
+	defaultTarget := pickDefaultTarget(state.ActiveCLI, latestTimes)
+
 	for _, p := range a.Registry.All() {
 		names = append(names, p.Name())
 		item := ui.PickerItem{
 			Label:   p.Name(),
-			Default: state.ActiveCLI == p.Name(),
-			Hint:    a.providerPickerHint(p, state, now),
+			Default: p.Name() == defaultTarget,
+		}
+		if p.Name() == defaultTarget {
+			item.Hint = "● active"
+		} else {
+			item.Hint = a.providerPickerHint(p, state, now)
 		}
 
 		// Hard quota-exhaustion evidence from the provider's own session
 		// logs makes the provider ineligible for selection.
-		if sess, sessErr := p.DetectLatestSession(proj.Path); sessErr == nil {
+		if sess, ok := latestSessions[p.Name()]; ok {
 			if d, parseErr := p.ParseSession(sess.Path); parseErr == nil && d.CooldownUntil != nil && d.CooldownUntil.After(now) {
 				reason := "quota reached, resets " + provider.FormatResetTime(*d.CooldownUntil, now)
 				item.Disabled = true
@@ -284,6 +301,25 @@ func (a *App) providerPickerHint(p provider.Provider, state *storage.State, now 
 	default:
 		return "● ready"
 	}
+}
+
+// pickDefaultTarget resolves the preselected provider for the picker:
+// torn's recorded active CLI wins; otherwise the provider with the most
+// recent session detected in this project is preselected.
+func pickDefaultTarget(activeCLI string, latestSessions map[string]time.Time) string {
+	if activeCLI != "" {
+		return activeCLI
+	}
+
+	best := ""
+	var bestTime time.Time
+	for name, updated := range latestSessions {
+		if best == "" || updated.After(bestTime) {
+			best = name
+			bestTime = updated
+		}
+	}
+	return best
 }
 
 // interactiveOutput reports whether w is a character device (a terminal).

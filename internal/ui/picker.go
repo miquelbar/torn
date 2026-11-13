@@ -256,6 +256,7 @@ func (p *Picker) renderItem(i int, sel int, items []PickerItem) {
 	pointer := "  "
 	mark := ""
 	style := "\x1b[2m"
+	label := item.Label
 	if i == sel {
 		pointer = "❯ "
 		if item.Disabled {
@@ -265,9 +266,9 @@ func (p *Picker) renderItem(i int, sel int, items []PickerItem) {
 			style = "\x1b[1m"
 		}
 	}
-	line := pointer + style + item.Label + mark + "\x1b[0m"
+	line := pointer + style + fmt.Sprintf("%-10s", label) + mark + "\x1b[0m"
 	if item.Hint != "" {
-		line += "\x1b[2m  " + item.Hint + "\x1b[0m"
+		line += "  " + item.Hint
 	}
 	fmt.Fprintln(p.Out, line)
 }

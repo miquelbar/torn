@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"torn/internal/executor"
 )
@@ -322,5 +323,23 @@ func TestBareTornNonInteractiveFailsOverAutomatically(t *testing.T) {
 	}
 	if executedBinary == "" {
 		t.Fatal("expected automatic failover execution, got none")
+	}
+}
+
+func TestPickDefaultTarget(t *testing.T) {
+	newer := time.Now()
+	older := newer.Add(-2 * time.Hour)
+
+	if got := pickDefaultTarget("vibe", map[string]time.Time{"claude": newer}); got != "vibe" {
+		t.Errorf("active CLI must win, got %q", got)
+	}
+
+	times := map[string]time.Time{"claude": older, "agy": newer, "codex": older.Add(-time.Hour)}
+	if got := pickDefaultTarget("", times); got != "agy" {
+		t.Errorf("expected most recent session provider agy, got %q", got)
+	}
+
+	if got := pickDefaultTarget("", nil); got != "" {
+		t.Errorf("expected empty default with no sessions, got %q", got)
 	}
 }
