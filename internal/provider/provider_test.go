@@ -621,3 +621,85 @@ func TestAgyAccountWideQuotaNoStore(t *testing.T) {
 		t.Errorf("expected nil with no agy store, got %v", until)
 	}
 }
+
+func TestClaudeAccountWideQuotaDetection(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewClaude(tempDir)
+	now := time.Now()
+
+	writeTranscript := func(project, content string, mtime time.Time) {
+		dir := filepath.Join(tempDir, "projects", project)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "sess-1.jsonl")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Active quota window: rejected status + absolute epoch in the future.
+	future := now.Add(2*time.Hour + 30*time.Minute).Unix()
+	active := fmt.Sprintf(`{"message":{"content":[{"type":"text","text":"You've hit your session limit"}]},"quotaLimits":{"status":"rejected","resetsAt":%d,"rateLimitType":"five_hour"},"error":"rate_limit","isApiErrorMessage":true}`, future)
+	writeTranscript("-Users-test-Projects-workdoku", active, now.Add(-1*time.Hour))
+
+	// An accepted quotaLimits block in another project must be ignored.
+	accepted := fmt.Sprintf(`{"quotaLimits":{"status":"accepted","resetsAt":%d}}`, future)
+	writeTranscript("-Users-test-Projects-lectors", accepted, now.Add(-30*time.Minute))
+
+	until := p.DetectQuotaCooldown(now)
+	if until == nil {
+		t.Fatal("expected account-wide quota detection from rejected quotaLimits")
+	}
+	if want := time.Unix(future, 0); !until.Equal(want) {
+		t.Errorf("expected reset at %v, got %v", want, until)
+	}
+}
+
+func TestClaudeAccountWideQuotaExpiredIgnored(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewClaude(tempDir)
+	now := time.Now()
+
+	dir := filepath.Join(tempDir, "projects", "-Users-test-Projects-old")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	past := now.Add(-26 * time.Hour).Unix()
+	line := fmt.Sprintf(`{"quotaLimits":{"status":"rejected","resetsAt":%d,"rateLimitType":"five_hour"},"isApiErrorMessage":true}`, past)
+	path := filepath.Join(dir, "sess-1.jsonl")
+	if err := os.WriteFile(path, []byte(line), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, now.Add(-26*time.Hour), now.Add(-26*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	if until := p.DetectQuotaCooldown(now); until != nil {
+		t.Errorf("expected nil for expired quota window, got %v", until)
+	}
+}
+
+func TestClaudeAccountWideQuotaConversationTextIgnored(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewClaude(tempDir)
+	now := time.Now()
+
+	dir := filepath.Join(tempDir, "projects", "-Users-test-Projects-chatter")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Text discussing quotas without structured evidence must not block.
+	line := `{"message":{"content":[{"type":"text","text":"we should handle 429 and quota reached errors gracefully. Do not attempt to use backup credits."}]}}`
+	path := filepath.Join(dir, "sess-1.jsonl")
+	if err := os.WriteFile(path, []byte(line), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if until := p.DetectQuotaCooldown(now); until != nil {
+		t.Errorf("expected nil for conversational quota text, got %v", until)
+	}
+}

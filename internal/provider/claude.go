@@ -2,11 +2,14 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,6 +30,118 @@ func NewClaude(baseDir string) *ClaudeProvider {
 
 func (c *ClaudeProvider) Name() string       { return "claude" }
 func (c *ClaudeProvider) BinaryName() string { return "claude" }
+
+// quotaLimitsRegex isolates Claude's structured quotaLimit blocks emitted
+// alongside API rejection messages:
+// "quotaLimits":{"status":"rejected","resetsAt":1787481000,...}
+var claudeQuotaLimitsRegex = regexp.MustCompile(`"quotaLimits"\s*:\s*\{[^{}]*\}`)
+var claudeResetsAtRegex = regexp.MustCompile(`"resetsAt"\s*:\s*(\d+)`)
+var claudeRejectedRegex = regexp.MustCompile(`"status"\s*:\s*"rejected"`)
+
+// transcriptFile is a project transcript with its modification time.
+type transcriptFile struct {
+	path    string
+	modTime time.Time
+}
+
+// DetectQuotaCooldown reports the account-wide quota reset window from
+// Claude's structured quotaLimits evidence: a rejected status paired with
+// an absolute resetsAt epoch leaves no room for interpretation. Recent
+// transcripts across all projects (up to 20, modified within the last 48h)
+// are inspected; quota limits attach to the account, not the repository.
+func (c *ClaudeProvider) DetectQuotaCooldown(now time.Time) *time.Time {
+	files := recentClaudeTranscripts(c.baseDir, now, 48*time.Hour, 20)
+	if len(files) == 0 {
+		return nil
+	}
+
+	var best *time.Time
+	for _, file := range files {
+		if until := scanClaudeQuotaLimits(file.path, now); until != nil {
+			if best == nil || until.After(*best) {
+				best = until
+			}
+		}
+	}
+	return best
+}
+
+// recentClaudeTranscripts returns transcript files across all projects
+// ordered newest-first, filtered by age and count.
+func recentClaudeTranscripts(baseDir string, now time.Time, maxAge time.Duration, maxCount int) []transcriptFile {
+	pattern := filepath.Join(baseDir, "projects", "*", "*.jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil
+	}
+
+	files := make([]transcriptFile, 0, len(matches))
+	for _, path := range matches {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if now.Sub(info.ModTime()) > maxAge {
+			continue
+		}
+		files = append(files, transcriptFile{path: path, modTime: info.ModTime()})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	if len(files) > maxCount {
+		files = files[:maxCount]
+	}
+	return files
+}
+
+// scanClaudeQuotaLimits extracts the newest still-active reset epoch from
+// structured quotaLimits blocks in one transcript.
+func scanClaudeQuotaLimits(path string, now time.Time) *time.Time {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var latest *time.Time
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, []byte(`"quotaLimits"`)) {
+			continue
+		}
+		until := parseClaudeQuotaLimits(line, now)
+		if until != nil && (latest == nil || until.After(*latest)) {
+			latest = until
+		}
+	}
+	return latest
+}
+
+// parseClaudeQuotaLimits validates a quotaLimits block as hard evidence:
+// status "rejected" plus an absolute resetsAt epoch still in the future.
+func parseClaudeQuotaLimits(line []byte, now time.Time) *time.Time {
+	for _, block := range claudeQuotaLimitsRegex.FindAll(line, -1) {
+		if !claudeRejectedRegex.Match(block) {
+			continue
+		}
+		m := claudeResetsAtRegex.FindSubmatch(block)
+		if m == nil {
+			continue
+		}
+		epoch, err := strconv.ParseInt(string(m[1]), 10, 64)
+		if err != nil {
+			continue
+		}
+		candidate := time.Unix(epoch, 0)
+		if candidate.After(now) {
+			return &candidate
+		}
+	}
+	return nil
+}
 
 func (c *ClaudeProvider) DefaultCooldown() time.Duration {
 	return 5 * time.Hour
