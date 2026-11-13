@@ -235,3 +235,92 @@ func TestCLIRelayDispatchWithMockExecutor(t *testing.T) {
 		t.Errorf("expected injected handoff prompt in argv[1]")
 	}
 }
+
+func TestBareTornInteractiveSelectorDispatch(t *testing.T) {
+	var out, errOut bytes.Buffer
+	var executedBinary string
+
+	mockRunner := func(binaryPath string, argv []string, env []string) error {
+		executedBinary = binaryPath
+		return nil
+	}
+
+	app, err := NewApp(&out, &errOut, t.TempDir(), mockRunner, nil)
+	if err != nil {
+		t.Fatalf("failed to create app: %v", err)
+	}
+	app.Executor = executor.New(mockRunner)
+	app.Executor.SetLookPath(func(file string) (string, error) {
+		return "/mock/bin/" + file, nil
+	})
+	app.Selector = func() (string, bool, error) {
+		return "vibe", false, nil
+	}
+
+	if err := app.Run([]string{}); err != nil {
+		t.Fatalf("bare relay failed: %v", err)
+	}
+	if !strings.HasSuffix(executedBinary, "vibe") {
+		t.Errorf("expected vibe execution from selector, got: %q", executedBinary)
+	}
+}
+
+func TestBareTornSelectorCancelled(t *testing.T) {
+	var out, errOut bytes.Buffer
+	var executedBinary string
+
+	mockRunner := func(binaryPath string, argv []string, env []string) error {
+		executedBinary = binaryPath
+		return nil
+	}
+
+	app, err := NewApp(&out, &errOut, t.TempDir(), mockRunner, nil)
+	if err != nil {
+		t.Fatalf("failed to create app: %v", err)
+	}
+	app.Executor = executor.New(mockRunner)
+	app.Executor.SetLookPath(func(file string) (string, error) {
+		return "/mock/bin/" + file, nil
+	})
+	app.Selector = func() (string, bool, error) {
+		return "", true, nil
+	}
+
+	if err := app.Run([]string{}); err != nil {
+		t.Fatalf("bare relay failed: %v", err)
+	}
+	if executedBinary != "" {
+		t.Errorf("expected no execution after cancel, got: %q", executedBinary)
+	}
+	if !strings.Contains(out.String(), "aborted") {
+		t.Errorf("expected abort notice, got: %q", out.String())
+	}
+}
+
+func TestBareTornNonInteractiveFailsOverAutomatically(t *testing.T) {
+	var out, errOut bytes.Buffer
+	var executedBinary string
+
+	mockRunner := func(binaryPath string, argv []string, env []string) error {
+		executedBinary = binaryPath
+		return nil
+	}
+
+	// Out is a bytes.Buffer, not a terminal: the interactive selector must
+	// be skipped and the relay fall back to automatic failover.
+	app, err := NewApp(&out, &errOut, t.TempDir(), mockRunner, nil)
+	if err != nil {
+		t.Fatalf("failed to create app: %v", err)
+	}
+	app.Executor = executor.New(mockRunner)
+	app.Executor.SetLookPath(func(file string) (string, error) {
+		return "/mock/bin/" + file, nil
+	})
+
+	if err := app.Run([]string{}); err != nil {
+		t.Fatalf("bare relay failed: %v", err)
+	}
+	if executedBinary == "" {
+		t.Fatal("expected automatic failover execution, got none")
+	}
+}

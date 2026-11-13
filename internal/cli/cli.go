@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -32,7 +33,17 @@ type App struct {
 	Executor  *executor.Executor
 	Clipboard clipboard.Writer
 	Cwd       string
+	// Selector resolves the target CLI interactively before a bare relay.
+	// When nil, torn falls back to its default interactive selector (or to
+	// automatic failover when the terminal is not interactive).
+	Selector ProviderSelector
 }
+
+// ProviderSelector interactively resolves a target CLI before a bare relay.
+// target is the chosen provider name. cancelled=true aborts the relay
+// cleanly. target=="" with cancelled==false signals "no interactive
+// selection" (the caller falls back to automatic failover).
+type ProviderSelector func() (target string, cancelled bool, err error)
 
 // NewApp creates a fully wired App instance.
 func NewApp(out, errOut io.Writer, storeBaseDir string, execRunner executor.ExecRunner, clipWriter clipboard.Writer) (*App, error) {
@@ -73,7 +84,7 @@ func NewApp(out, errOut io.Writer, storeBaseDir string, execRunner executor.Exec
 // Run parses CLI flags and dispatches commands.
 func (a *App) Run(args []string) error {
 	if len(args) == 0 {
-		return a.RunRelay("", handoff.Options{})
+		return a.runBareRelay()
 	}
 
 	cmd := strings.ToLower(args[0])
@@ -170,6 +181,110 @@ func (a *App) parseAndRunRelay(args []string) error {
 		Fresh:          *fresh,
 		DryRun:         *dryRun,
 	})
+}
+
+// runBareRelay handles `torn` with no arguments: when running on an
+// interactive terminal it shows the target provider selection screen,
+// otherwise it falls back to automatic failover.
+func (a *App) runBareRelay() error {
+	target, cancelled, err := a.resolveBareTarget()
+	if err != nil {
+		return err
+	}
+	if cancelled {
+		fmt.Fprintln(a.Out, "Relay aborted, nothing executed.")
+		return nil
+	}
+	return a.RunRelay(target, handoff.Options{})
+}
+
+func (a *App) resolveBareTarget() (string, bool, error) {
+	if a.Selector != nil {
+		return a.Selector()
+	}
+	return a.selectTargetInteractively()
+}
+
+// selectTargetInteractively renders the provider picker on interactive
+// terminals. On non-interactive contexts it returns an empty target so the
+// caller keeps the automatic failover behavior.
+func (a *App) selectTargetInteractively() (string, bool, error) {
+	if !interactiveOutput(a.Out) || !isTerminal(os.Stdin) {
+		return "", false, nil
+	}
+
+	proj, err := project.Detect(a.Cwd)
+	if err != nil {
+		return "", false, nil
+	}
+	state, err := a.Store.LoadState(proj)
+	if err != nil {
+		return "", false, nil
+	}
+	now := time.Now()
+
+	names := make([]string, 0, 4)
+	items := make([]ui.PickerItem, 0, 4)
+	for _, p := range a.Registry.All() {
+		names = append(names, p.Name())
+		items = append(items, ui.PickerItem{
+			Label:   p.Name(),
+			Hint:    a.providerPickerHint(p, state, now),
+			Default: state.ActiveCLI == p.Name(),
+		})
+	}
+
+	picker := &ui.Picker{
+		Out:     a.Out,
+		In:      os.Stdin,
+		StdinFd: os.Stdin.Fd(),
+	}
+	choice, selErr := picker.Select("TORN RELAY — select target CLI", items)
+	if selErr != nil {
+		return "", false, fmt.Errorf("provider selection: %w", selErr)
+	}
+	if choice < 0 {
+		return "", true, nil
+	}
+	return names[choice], false, nil
+}
+
+// providerPickerHint builds the status annotation shown next to a provider.
+func (a *App) providerPickerHint(p provider.Provider, state *storage.State, now time.Time) string {
+	if _, err := exec.LookPath(p.BinaryName()); err != nil {
+		return "○ not installed"
+	}
+	status, remaining := a.Cooldown.GetStatus(p.Name(), state, now)
+	switch status {
+	case cooldown.StatusActive:
+		return "● active"
+	case cooldown.StatusCooldown:
+		return "● cooldown " + cooldown.FormatDuration(remaining)
+	default:
+		return "● ready"
+	}
+}
+
+// interactiveOutput reports whether w is a character device (a terminal).
+func interactiveOutput(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// isTerminal reports whether f is attached to a terminal.
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // RunRelay switches or advances to the target CLI with injected handoff context.
@@ -548,7 +663,7 @@ func (a *App) printHelp() {
 	helpText := `torn - Zero-footprint local hypervisor for AI CLI handoffs
 
 USAGE:
-  torn [cli] [flags]       Relay to next CLI (or specified target)
+  torn [cli] [flags]       Relay to target CLI (interactive selector when no target given)
   torn prep                Copy soft-landing closing prompt to clipboard
   torn stats [flags]       Display or export provider status and quota telemetry
   torn find <query>        Search local sessions across CLIs by keyword
@@ -567,7 +682,7 @@ STATS FLAGS:
   --refresh, -r            Force refresh telemetry from disk logs instead of cache
 
 EXAMPLES:
-  torn                     Automatic failover relay to next available CLI
+  torn                     Interactive selection screen (automatic failover when non-interactive)
   torn --dry-run           Preview generated handoff without executing
   torn stats               Display stats for current directory (or global if no project)
   torn stats --global      Display global account-wide telemetry across all projects

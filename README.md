@@ -207,9 +207,10 @@ Paste it into your active CLI to generate a clean closing summary before hitting
 
 Switch seamlessly from your current agent to the next available provider. `torn` inspects local session transcripts, extracts user directives and file modifications, checks `git diff`, and injects the context cleanly.
 
-#### Automatic Failover or Explicit Switch
+#### Interactive Selection or Explicit Switch
 ```bash
-# Automatic relay to next ready CLI
+# Interactive provider selection screen (arrow keys, Enter to launch)
+# Falls back to automatic failover when not attached to a terminal
 torn
 
 # Explicitly switch to Codex
