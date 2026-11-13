@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -702,4 +703,88 @@ func TestClaudeAccountWideQuotaConversationTextIgnored(t *testing.T) {
 	if until := p.DetectQuotaCooldown(now); until != nil {
 		t.Errorf("expected nil for conversational quota text, got %v", until)
 	}
+}
+
+func TestAgyQuotaSoonestWindowWins(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewAgy(tempDir)
+	now := time.Now()
+
+	write := func(conv, body string) {
+		dir := filepath.Join(tempDir, "brain", conv, ".system_generated", "logs")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "transcript.jsonl"), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Weekly window (exhausted) refreshing in ~30h.
+	weekly := fmt.Sprintf(`{"type":"ERROR_MESSAGE","error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 30h0m0s.","created_at":%q}`, now.UTC().Format(time.RFC3339))
+	write("conv-weekly", weekly+"\n")
+
+	// Five-hour window refreshing in ~2h must win: agy becomes usable
+	// again when the FIRST exhausted window resets.
+	fiveHour := fmt.Sprintf(`{"type":"ERROR_MESSAGE","error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 2h0m0s.","created_at":%q}`, now.UTC().Truncate(time.Second).Format(time.RFC3339))
+	write("conv-fivehour", fiveHour+"\n")
+
+	until := p.DetectQuotaCooldown(now)
+	if until == nil {
+		t.Fatal("expected quota detection")
+	}
+	anchor, _ := time.Parse(time.RFC3339, now.UTC().Truncate(time.Second).Format(time.RFC3339))
+	want := anchor.Add(2 * time.Hour)
+	if until.Sub(want) > time.Minute {
+		t.Errorf("expected soonest window ~%v, got %v", want, until)
+	}
+}
+
+func TestAgyConversationDBQuotaScan(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 CLI not available")
+	}
+
+	tempDir := t.TempDir()
+	p := NewAgy(tempDir)
+	now := time.Now()
+
+	convDir := filepath.Join(tempDir, "conversations")
+	if err := os.MkdirAll(convDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(convDir, "conv.db")
+
+	if out, err := exec.Command("sqlite3", dbPath,
+		"CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_payload TEXT);",
+	).CombinedOutput(); err != nil {
+		t.Fatalf("creating fixture db: %v: %s", err, out)
+	}
+
+	// Recent quota error at a high idx (within the recency window).
+	payload := "RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h5m0s."
+	inserts := []string{
+		"INSERT INTO steps (idx, step_payload) VALUES (1, 'chatter about quotas in the app code');",
+		fmt.Sprintf("INSERT INTO steps (idx, step_payload) VALUES (900, %s);", quoteSQL("RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 12h0m0s.")),
+		fmt.Sprintf("INSERT INTO steps (idx, step_payload) VALUES (1001, %s);", quoteSQL(payload)),
+	}
+	args := append([]string{dbPath}, inserts...)
+	if out, err := exec.Command("sqlite3", args...).CombinedOutput(); err != nil {
+		t.Fatalf("seeding fixture db: %v: %s", err, out)
+	}
+
+	until := p.DetectQuotaCooldown(now)
+	if until == nil {
+		t.Fatal("expected quota detection from conversations db")
+	}
+	// Anchored at the file mtime: mtime + 3h05m, minus the longer 12h
+	// candidate from idx 900 (soonest wins).
+	expected := fileModTime(dbPath, now).Add(3*time.Hour + 5*time.Minute)
+	if until.Sub(expected) > time.Minute {
+		t.Errorf("expected ~%v (soonest window), got %v", expected, until)
+	}
+}
+
+func quoteSQL(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
