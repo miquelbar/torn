@@ -552,3 +552,72 @@ func TestAgyQuotaCooldownParsing(t *testing.T) {
 		t.Errorf("expected reset at %v, got %v", want, details.CooldownUntil)
 	}
 }
+
+func TestAgyAccountWideQuotaDetection(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewAgy(tempDir)
+	now := time.Now()
+
+	// Two conversations in different workspaces; the freshest carries the
+	// active quota window.
+	old := filepath.Join(tempDir, "brain", "conv-old", ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(old), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldStep := fmt.Sprintf(`{"type":"ERROR_MESSAGE","error":"API error: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 30m.","created_at":%q}`, now.Add(-2*time.Hour).Format(time.RFC3339))
+	if err := os.WriteFile(old, []byte(oldStep+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := filepath.Join(tempDir, "brain", "conv-fresh", ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(fresh), 0755); err != nil {
+		t.Fatal(err)
+	}
+	anchorStr := now.Add(-10 * time.Minute).UTC().Truncate(time.Second).Format(time.RFC3339)
+	freshStep := fmt.Sprintf(`{"type":"ERROR_MESSAGE","error":"API error: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 4h8m33s.","created_at":%q}`, anchorStr)
+	if err := os.WriteFile(fresh, []byte(freshStep+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	until := p.DetectQuotaCooldown(now)
+	if until == nil {
+		t.Fatal("expected account-wide quota detection from freshest transcript")
+	}
+	anchor, _ := time.Parse(time.RFC3339, anchorStr)
+	want := anchor.Add(4*time.Hour + 8*time.Minute + 33*time.Second)
+	if !until.Equal(want) {
+		t.Errorf("expected reset at ~%v, got %v", want, until)
+	}
+}
+
+func TestAgyAccountWideQuotaIgnoresStaleTranscripts(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewAgy(tempDir)
+	now := time.Now()
+
+	// Quota window announced long ago in a transcript whose mtime is old:
+	// skipped entirely (and the window is expired anyway).
+	stale := filepath.Join(tempDir, "brain", "conv-stale", ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(stale), 0755); err != nil {
+		t.Fatal(err)
+	}
+	step := `{"type":"ERROR_MESSAGE","error":"API error: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 4h0m0s.","created_at":"2026-09-27T09:28:15Z"}` + "\n"
+	if err := os.WriteFile(stale, []byte(step), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := now.AddDate(0, 0, -47)
+	if err := os.Chtimes(stale, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	if until := p.DetectQuotaCooldown(now); until != nil {
+		t.Errorf("expected nil for stale/expired quota window, got %v", until)
+	}
+}
+
+func TestAgyAccountWideQuotaNoStore(t *testing.T) {
+	p := NewAgy(t.TempDir() + "/nonexistent")
+	if until := p.DetectQuotaCooldown(time.Now()); until != nil {
+		t.Errorf("expected nil with no agy store, got %v", until)
+	}
+}

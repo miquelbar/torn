@@ -73,3 +73,10 @@ type Provider interface {
 	DefaultCooldown() time.Duration
 	CollectUsage(now time.Time, projectDir ...string) (UsageMetrics, error)
 }
+
+// QuotaDetector is implemented by providers that can detect account-wide
+// quota exhaustion across all their on-disk sessions, regardless of the
+// project directory. Quotas attach to accounts, not to repositories.
+type QuotaDetector interface {
+	DetectQuotaCooldown(now time.Time) *time.Time
+}

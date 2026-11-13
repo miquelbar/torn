@@ -252,17 +252,16 @@ func (a *App) selectTargetInteractively() (string, bool, error) {
 			item.Hint = a.providerPickerHint(p, state, now)
 		}
 
-		// Hard quota-exhaustion evidence from the provider's own session
-		// logs makes the provider ineligible for selection.
-		if sess, ok := latestSessions[p.Name()]; ok {
-			if d, parseErr := p.ParseSession(sess.Path); parseErr == nil && d.CooldownUntil != nil && d.CooldownUntil.After(now) {
-				reason := "quota reached, resets " + provider.FormatResetTime(*d.CooldownUntil, now)
-				item.Disabled = true
-				item.DisabledWhy = reason
-				item.Hint = "✗ " + reason
-				a.Cooldown.SetCooldownUntil(p.Name(), state, *d.CooldownUntil)
-				stateChanged = true
-			}
+		// Hard quota-exhaustion evidence makes the provider ineligible:
+		// first from this project's own latest session (claude), then from
+		// account-wide detection for providers implementing QuotaDetector.
+		if until := providerQuotaUntil(p, latestSessions[p.Name()], now); until != nil {
+			reason := "quota reached, resets " + provider.FormatResetTime(*until, now)
+			item.Disabled = true
+			item.DisabledWhy = reason
+			item.Hint = "✗ " + reason
+			a.Cooldown.SetCooldownUntil(p.Name(), state, *until)
+			stateChanged = true
 		}
 
 		items = append(items, item)
@@ -301,6 +300,22 @@ func (a *App) providerPickerHint(p provider.Provider, state *storage.State, now 
 	default:
 		return "● ready"
 	}
+}
+
+// providerQuotaUntil resolves an active quota cooldown for a provider from
+// its latest project session or, failing that, from account-wide detection.
+func providerQuotaUntil(p provider.Provider, sess *provider.Session, now time.Time) *time.Time {
+	if sess != nil {
+		if d, err := p.ParseSession(sess.Path); err == nil && d.CooldownUntil != nil && d.CooldownUntil.After(now) {
+			return d.CooldownUntil
+		}
+	}
+	if qd, ok := p.(provider.QuotaDetector); ok {
+		if until := qd.DetectQuotaCooldown(now); until != nil && until.After(now) {
+			return until
+		}
+	}
+	return nil
 }
 
 // pickDefaultTarget resolves the preselected provider for the picker:

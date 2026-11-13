@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,6 +28,95 @@ func NewAgy(baseDir string) *AgyProvider {
 
 func (a *AgyProvider) Name() string       { return "agy" }
 func (a *AgyProvider) BinaryName() string { return "agy" }
+
+// DetectQuotaCooldown reports the account-wide quota reset window when one
+// is currently active. Quotas attach to the account, so transcripts are
+// scanned across all workspaces: the most recent transcripts (up to 20,
+// modified within the last 48h) are inspected for RESOURCE_EXHAUSTED quota
+// steps whose reset window is still in the future.
+func (a *AgyProvider) DetectQuotaCooldown(now time.Time) *time.Time {
+	pattern := filepath.Join(a.baseDir, "brain", "*", ".system_generated", "logs", "transcript.jsonl")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil
+	}
+
+	sorted := make([]string, 0, len(files))
+	for _, f := range files {
+		sorted = append(sorted, f)
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		mi, errI := os.Stat(sorted[i])
+		mj, errJ := os.Stat(sorted[j])
+		if errI != nil || errJ != nil {
+			return false
+		}
+		return mi.ModTime().After(mj.ModTime())
+	})
+
+	var best *time.Time
+	scanned := 0
+	for _, f := range sorted {
+		info, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) > 48*time.Hour {
+			continue
+		}
+		scanned++
+		if scanned > 20 {
+			break
+		}
+		if until := scanAgyTranscriptQuota(f, now); until != nil {
+			if best == nil || until.After(*best) {
+				best = until
+			}
+		}
+	}
+	return best
+}
+
+// scanAgyTranscriptQuota extracts the latest active quota reset from one
+// transcript, if any.
+func scanAgyTranscriptQuota(path string, now time.Time) *time.Time {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var latest *time.Time
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, []byte(`"error"`)) {
+			continue
+		}
+		var step struct {
+			Error     string `json:"error"`
+			CreatedAt string `json:"created_at"`
+		}
+		if err := json.Unmarshal(line, &step); err != nil || step.Error == "" {
+			continue
+		}
+		msgTime := time.Time{}
+		if step.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339Nano, step.CreatedAt); err == nil {
+				msgTime = t
+			} else if t, err := time.Parse(time.RFC3339, step.CreatedAt); err == nil {
+				msgTime = t
+			}
+		}
+		if until := DetectQuotaCooldown(step.Error, msgTime, now); until != nil {
+			if latest == nil || until.After(*latest) {
+				latest = until
+			}
+		}
+	}
+	return latest
+}
 
 func (a *AgyProvider) DefaultCooldown() time.Duration {
 	return 4 * time.Hour
