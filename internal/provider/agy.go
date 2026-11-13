@@ -188,6 +188,8 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 			Source       string `json:"source"`
 			Content      string `json:"content"`
 			Thinking     string `json:"thinking"`
+			Error        string `json:"error"`
+			CreatedAt    string `json:"created_at"`
 			InputTokens  int    `json:"input_tokens"`
 			OutputTokens int    `json:"output_tokens"`
 			ToolCalls    []struct {
@@ -198,6 +200,23 @@ func (a *AgyProvider) ParseSession(sessionPath string) (*SessionDetails, error) 
 
 		if err := json.Unmarshal(line, &step); err != nil {
 			continue
+		}
+
+		if step.Error != "" {
+			// System error steps (e.g. "RESOURCE_EXHAUSTED ... quota
+			// reached ... Resets in 2h15m49s") carry the quota reset
+			// evidence; created_at anchors the relative countdown.
+			msgTime := stat.ModTime()
+			if step.CreatedAt != "" {
+				if t, err := time.Parse(time.RFC3339Nano, step.CreatedAt); err == nil {
+					msgTime = t
+				} else if t, err := time.Parse(time.RFC3339, step.CreatedAt); err == nil {
+					msgTime = t
+				}
+			}
+			if until := DetectQuotaCooldown(step.Error, msgTime, time.Now()); until != nil {
+				details.CooldownUntil = until
+			}
 		}
 
 		turnTokens := step.InputTokens + step.OutputTokens

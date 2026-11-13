@@ -225,13 +225,34 @@ func (a *App) selectTargetInteractively() (string, bool, error) {
 
 	names := make([]string, 0, 4)
 	items := make([]ui.PickerItem, 0, 4)
+	stateChanged := false
+
 	for _, p := range a.Registry.All() {
 		names = append(names, p.Name())
-		items = append(items, ui.PickerItem{
+		item := ui.PickerItem{
 			Label:   p.Name(),
-			Hint:    a.providerPickerHint(p, state, now),
 			Default: state.ActiveCLI == p.Name(),
-		})
+			Hint:    a.providerPickerHint(p, state, now),
+		}
+
+		// Hard quota-exhaustion evidence from the provider's own session
+		// logs makes the provider ineligible for selection.
+		if sess, sessErr := p.DetectLatestSession(proj.Path); sessErr == nil {
+			if d, parseErr := p.ParseSession(sess.Path); parseErr == nil && d.CooldownUntil != nil && d.CooldownUntil.After(now) {
+				reason := "quota reached, resets " + provider.FormatResetTime(*d.CooldownUntil, now)
+				item.Disabled = true
+				item.DisabledWhy = reason
+				item.Hint = "✗ " + reason
+				a.Cooldown.SetCooldownUntil(p.Name(), state, *d.CooldownUntil)
+				stateChanged = true
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	if stateChanged {
+		_ = a.Store.SaveState(proj, state)
 	}
 
 	picker := &ui.Picker{

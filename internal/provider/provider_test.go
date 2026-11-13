@@ -441,3 +441,114 @@ func TestMultiModelSessionSwitching(t *testing.T) {
 		t.Errorf("expected 0 sessions for other project, got %d", diffUsage.TotalSessions)
 	}
 }
+
+func TestExtractResetTimeRelativeDurations(t *testing.T) {
+	now := time.Date(2026, 11, 13, 20, 0, 0, 0, time.UTC)
+	anchor := time.Date(2026, 11, 13, 19, 28, 6, 0, time.UTC)
+
+	// Real agy error message format.
+	msg := "API error (attempt 1): RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h15m49s."
+	until := ExtractResetTime(msg, anchor, now)
+	if until == nil {
+		t.Fatal("expected reset time from agy quota message, got nil")
+	}
+	want := anchor.Add(2*time.Hour + 15*time.Minute + 49*time.Second)
+	if !until.Equal(want) {
+		t.Errorf("expected %v, got %v", want, until)
+	}
+}
+
+func TestExtractResetTimeDurationVariants(t *testing.T) {
+	now := time.Date(2026, 11, 13, 20, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		text string
+		want time.Duration
+	}{
+		{"Resets in 4h8m33s.", 4*time.Hour + 8*time.Minute + 33*time.Second},
+		{"resets in 8m10s", 8*time.Minute + 10*time.Second},
+		{"resets in 45s", 45 * time.Second},
+		{"Your limit resets in 3h", 3 * time.Hour},
+	}
+	for _, tc := range cases {
+		until := ExtractResetTime(tc.text, now, now)
+		if until == nil {
+			t.Errorf("no reset parsed for %q", tc.text)
+			continue
+		}
+		if got := until.Sub(now); got != tc.want {
+			t.Errorf("%q: expected +%v, got +%v", tc.text, tc.want, got)
+		}
+	}
+}
+
+func TestDetectQuotaCooldown(t *testing.T) {
+	now := time.Date(2026, 11, 13, 20, 0, 0, 0, time.UTC)
+	anchor := now.Add(-10 * time.Minute)
+
+	// Positive: exhaustion evidence + reset in the same message.
+	msg := "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h30m."
+	if until := DetectQuotaCooldown(msg, anchor, now); until == nil {
+		t.Error("expected cooldown from quota message")
+	}
+
+	// Negative: conversation text mentioning quota without reset info.
+	chatter := "quota is exhausted. Do not attempt to use backup AI credits."
+	if until := DetectQuotaCooldown(chatter, anchor, now); until != nil {
+		t.Error("expected no cooldown for ordinary conversational text")
+	}
+
+	// Negative: reset announcement without exhaustion evidence.
+	plain := "The maintenance window resets in 2h."
+	if until := DetectQuotaCooldown(plain, anchor, now); until != nil {
+		t.Error("expected no cooldown without exhaustion evidence")
+	}
+
+	// Negative: expired reset (quota window already passed).
+	expired := "Individual quota reached. Resets in 5m."
+	if until := DetectQuotaCooldown(expired, anchor.Add(-1*time.Hour), now); until != nil {
+		t.Error("expected no cooldown for expired quota window")
+	}
+}
+
+func TestAgyQuotaCooldownParsing(t *testing.T) {
+	tempDir := t.TempDir()
+	p := NewAgy(tempDir)
+
+	convID := "agy-quota-conv-1"
+	workspace := "/Users/test/Projects/agy-app"
+
+	historyContent := fmt.Sprintf(`{"display":"help","timestamp":1793649474024,"workspace":%q,"conversationId":%q}`, workspace, convID)
+	if err := os.WriteFile(filepath.Join(tempDir, "history.jsonl"), []byte(historyContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	transcriptDir := filepath.Join(tempDir, "brain", convID, ".system_generated", "logs")
+	if err := os.MkdirAll(transcriptDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Real agy quota error step (RESOURCE_EXHAUSTED) in transcript format.
+	quotaStep := `{"step_index":1780,"source":"SYSTEM","type":"ERROR_MESSAGE","status":"DONE","error":"API error (attempt 1): RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h8m33s.","created_at":"2026-11-13T19:36:00Z"}` + "\n"
+	plainStep := `{"type":"USER_INPUT","content":"hello","created_at":"2026-11-13T19:35:00Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(transcriptDir, "transcript.jsonl"), []byte(plainStep+quotaStep), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := p.DetectLatestSession(workspace)
+	if err != nil {
+		t.Fatalf("DetectLatestSession failed: %v", err)
+	}
+	details, err := p.ParseSession(sess.Path)
+	if err != nil {
+		t.Fatalf("ParseSession failed: %v", err)
+	}
+	if details.CooldownUntil == nil {
+		t.Fatal("expected CooldownUntil from agy quota step")
+	}
+	anchor := time.Date(2026, 11, 13, 19, 36, 0, 0, time.UTC)
+	want := anchor.Add(4*time.Hour + 8*time.Minute + 33*time.Second)
+	if !details.CooldownUntil.Equal(want) {
+		t.Errorf("expected reset at %v, got %v", want, details.CooldownUntil)
+	}
+}

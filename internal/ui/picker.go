@@ -15,9 +15,11 @@ var errRawUnsupported = errors.New("raw terminal mode unsupported on this platfo
 
 // PickerItem is one selectable row of a Picker screen.
 type PickerItem struct {
-	Label   string
-	Hint    string
-	Default bool // preselect this item
+	Label       string
+	Hint        string
+	Default     bool   // preselect this item
+	Disabled    bool   // ineligible for selection (e.g. quota exhausted)
+	DisabledWhy string // flash message shown when selection is attempted
 }
 
 // Picker renders an interactive single-choice selector on a terminal.
@@ -106,9 +108,12 @@ func (q *keyQueue) fill() error {
 
 // selectByKeys runs the raw-mode interaction loop: arrow keys or j/k move
 // the cursor, digits pick directly, Enter confirms, q/Esc/Ctrl-C cancels.
+// Disabled items can be traversed but not confirmed; attempting to confirm
+// flashes the item's DisabledWhy notice.
 func (p *Picker) selectByKeys(title string, items []PickerItem) (int, error) {
 	sel := defaultIndex(items)
-	linesDrawn := p.render(title, items, sel)
+	notice := ""
+	linesDrawn := p.render(title, items, sel, notice)
 
 	queue := newKeyQueue(p.In)
 	for {
@@ -118,10 +123,11 @@ func (p *Picker) selectByKeys(title string, items []PickerItem) (int, error) {
 			return -1, fmt.Errorf("reading selection input: %w", err)
 		}
 
+		confirm := false
+
 		switch b {
 		case '\r', '\n':
-			p.clearLines(linesDrawn)
-			return sel, nil
+			confirm = true
 		case 0x03, 'q':
 			p.clearLines(linesDrawn)
 			return -1, nil
@@ -133,26 +139,35 @@ func (p *Picker) selectByKeys(title string, items []PickerItem) (int, error) {
 			}
 			if action == moveUp {
 				sel = dec(sel, len(items))
-				linesDrawn = p.rerender(title, items, sel, linesDrawn)
 			} else if action == moveDown {
 				sel = inc(sel, len(items))
-				linesDrawn = p.rerender(title, items, sel, linesDrawn)
 			}
 		case 'j':
 			sel = inc(sel, len(items))
-			linesDrawn = p.rerender(title, items, sel, linesDrawn)
 		case 'k':
 			sel = dec(sel, len(items))
-			linesDrawn = p.rerender(title, items, sel, linesDrawn)
 		default:
 			if b >= '1' && b <= '9' {
 				idx := int(b-'1') + 1
 				if idx <= len(items) {
-					p.clearLines(linesDrawn)
-					return idx - 1, nil
+					sel = idx - 1
+					confirm = true
 				}
 			}
 		}
+
+		if confirm && items[sel].Disabled {
+			notice = disabledNotice(items[sel])
+			confirm = false
+		} else {
+			notice = ""
+		}
+
+		if confirm {
+			p.clearLines(linesDrawn)
+			return sel, nil
+		}
+		linesDrawn = p.rerender(title, items, sel, notice, linesDrawn)
 	}
 }
 
@@ -222,25 +237,35 @@ func defaultIndex(items []PickerItem) int {
 }
 
 // render paints the full selector screen and returns the number of lines.
-func (p *Picker) render(title string, items []PickerItem, sel int) int {
+// When notice is non-empty it replaces the footer hint line.
+func (p *Picker) render(title string, items []PickerItem, sel int, notice string) int {
 	fmt.Fprintln(p.Out, "\x1b[1m"+title+"\x1b[0m")
 	for i := range items {
 		p.renderItem(i, sel, items)
 	}
-	fmt.Fprintf(p.Out, "\x1b[2m%s\x1b[0m\n",
-		"  ↵ launch · ↑/↓ or j/k move · 1-"+strconv.Itoa(len(items))+" pick · q abort")
+	footer := "  ↵ launch · ↑/↓ or j/k move · 1-" + strconv.Itoa(len(items)) + " pick · q abort"
+	if notice != "" {
+		footer = "  " + notice
+	}
+	fmt.Fprintf(p.Out, "\x1b[2m%s\x1b[0m\n", footer)
 	return len(items) + 2
 }
 
 func (p *Picker) renderItem(i int, sel int, items []PickerItem) {
 	item := items[i]
 	pointer := "  "
+	mark := ""
 	style := "\x1b[2m"
 	if i == sel {
 		pointer = "❯ "
-		style = "\x1b[1m"
+		if item.Disabled {
+			style = "\x1b[31m"
+			mark = " ✗"
+		} else {
+			style = "\x1b[1m"
+		}
 	}
-	line := pointer + style + item.Label + "\x1b[0m"
+	line := pointer + style + item.Label + mark + "\x1b[0m"
 	if item.Hint != "" {
 		line += "\x1b[2m  " + item.Hint + "\x1b[0m"
 	}
@@ -253,12 +278,13 @@ func (p *Picker) clearLines(lines int) {
 	}
 }
 
-func (p *Picker) rerender(title string, items []PickerItem, sel int, linesDrawn int) int {
+func (p *Picker) rerender(title string, items []PickerItem, sel int, notice string, linesDrawn int) int {
 	p.clearLines(linesDrawn)
-	return p.render(title, items, sel)
+	return p.render(title, items, sel, notice)
 }
 
 // selectByLine is the non-raw fallback: numbered prompt read line-by-line.
+// Disabled items are rejected with their reason until a valid choice is made.
 func (p *Picker) selectByLine(title string, items []PickerItem) (int, error) {
 	fmt.Fprintln(p.Out, title)
 	for i, item := range items {
@@ -270,21 +296,45 @@ func (p *Picker) selectByLine(title string, items []PickerItem) (int, error) {
 	}
 	fmt.Fprintf(p.Out, "Enter choice [1-%d] (q to abort): ", len(items))
 
-	line, err := bufio.NewReader(p.In).ReadString('\n')
-	if err != nil {
-		return -1, fmt.Errorf("reading selection: %w", err)
-	}
+	reader := bufio.NewReader(p.In)
+	for attempts := 0; attempts < 5; attempts++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return -1, fmt.Errorf("reading selection: %w", err)
+		}
 
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return defaultIndex(items), nil
-	}
-	if strings.EqualFold(line, "q") {
-		return -1, nil
-	}
-	num, err := strconv.Atoi(line)
-	if err != nil || num < 1 || num > len(items) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			idx := defaultIndex(items)
+			if !items[idx].Disabled {
+				return idx, nil
+			}
+			fmt.Fprintln(p.Out, disabledNotice(items[idx]))
+			fmt.Fprint(p.Out, "Choice: ")
+			continue
+		}
+		if strings.EqualFold(line, "q") {
+			return -1, nil
+		}
+		num, convErr := strconv.Atoi(line)
+		if convErr == nil && num >= 1 && num <= len(items) {
+			item := items[num-1]
+			if item.Disabled {
+				fmt.Fprintln(p.Out, disabledNotice(item))
+				fmt.Fprint(p.Out, "Choice: ")
+				continue
+			}
+			return num - 1, nil
+		}
 		return -1, fmt.Errorf("invalid selection %q", line)
 	}
-	return num - 1, nil
+	return -1, fmt.Errorf("no valid selection made")
+}
+
+// disabledNotice builds the reason shown when a disabled item is attempted.
+func disabledNotice(item PickerItem) string {
+	if item.DisabledWhy != "" {
+		return "⚠ " + item.Label + ": " + item.DisabledWhy
+	}
+	return "⚠ " + item.Label + " is not selectable"
 }

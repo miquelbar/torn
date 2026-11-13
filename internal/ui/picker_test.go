@@ -236,3 +236,99 @@ func TestPickerInputClosed(t *testing.T) {
 type failingReader struct{ err error }
 
 func (f failingReader) Read([]byte) (int, error) { return 0, f.err }
+
+func TestPickerDisabledEnterFlashesAndBlocks(t *testing.T) {
+	var out bytes.Buffer
+	pv := false
+	p := pickerWith("\rj\r", &out, fakeRaw(&pv))
+
+	idx, err := p.Select("Pick a CLI", []PickerItem{
+		{Label: "claude", Disabled: true, DisabledWhy: "quota reached, resets 23:44"},
+		{Label: "vibe"},
+	})
+	if err != nil {
+		t.Fatalf("Select failed: %v", err)
+	}
+	// Enter on the disabled (default) item must not confirm; j moves to the
+	// next enabled item which then confirms with Enter.
+	if idx != 1 {
+		t.Errorf("expected selection 1 after blocked first Enter, got %d", idx)
+	}
+	if !strings.Contains(out.String(), "claude: quota reached") {
+		t.Errorf("expected flash notice, got: %q", out.String())
+	}
+}
+
+func TestPickerDisabledDigitFlashesAndBlocks(t *testing.T) {
+	var out bytes.Buffer
+	pv := false
+	// Digit 2 targets the disabled item: pointer moves there and flashes the
+	// reason, but no confirmation happens; k moves back to 0 and Enter
+	// confirms the enabled item.
+	p := pickerWith("2k\r", &out, fakeRaw(&pv))
+
+	items := []PickerItem{
+		{Label: "claude"},
+		{Label: "agy", Disabled: true, DisabledWhy: "quota reached, resets 23:44"},
+	}
+	idx, err := p.Select("Pick a CLI", items)
+	if err != nil {
+		t.Fatalf("Select failed: %v", err)
+	}
+	if idx != 0 {
+		t.Errorf("expected selection 0 after blocked digit, got %d", idx)
+	}
+	if !strings.Contains(out.String(), "agy: quota reached") {
+		t.Errorf("expected disabled flash notice, got: %q", out.String())
+	}
+}
+
+func TestPickerDisabledNavigationStillTraverses(t *testing.T) {
+	var out bytes.Buffer
+	pv := false
+	// Default is index 1 (vibe); k moves to the disabled claude at 0, Enter
+	// flashes the reason without confirming, j returns to 1, Enter confirms.
+	p := pickerWith("k\rj\r", &out, fakeRaw(&pv))
+
+	items := []PickerItem{
+		{Label: "claude", Disabled: true, DisabledWhy: "quota reached"},
+		{Label: "vibe", Default: true},
+		{Label: "agy"},
+	}
+	idx, err := p.Select("Pick a CLI", items)
+	if err != nil {
+		t.Fatalf("Select failed: %v", err)
+	}
+	if idx != 1 {
+		t.Errorf("expected 1 after blocked Enter on disabled item, got %d", idx)
+	}
+	if !strings.Contains(out.String(), "claude: quota reached") {
+		t.Errorf("expected disabled reason in output, got: %q", out.String())
+	}
+}
+
+func TestPickerLineModeDisabledReprompts(t *testing.T) {
+	var out bytes.Buffer
+	p := pickerWith("1\n2\n", &out, failingRaw())
+
+	items := []PickerItem{
+		{Label: "claude", Disabled: true, DisabledWhy: "quota reached"},
+		{Label: "vibe"},
+	}
+	idx, err := p.Select("Pick a CLI", items)
+	if err != nil {
+		t.Fatalf("Select failed: %v", err)
+	}
+	if idx != 1 {
+		t.Errorf("expected selection 1 after reprompt, got %d", idx)
+	}
+	if !strings.Contains(out.String(), "claude: quota reached") {
+		t.Errorf("expected disabled reason in output, got: %q", out.String())
+	}
+}
+
+func TestFormatDisabledNoticeDefaults(t *testing.T) {
+	if got := disabledNotice(PickerItem{Label: "codex", Disabled: true}); !strings.Contains(got, "not selectable") {
+		t.Errorf("expected generic notice, got %q", got)
+	}
+}
